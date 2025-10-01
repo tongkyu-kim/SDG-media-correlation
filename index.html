@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SDG Media & ODA Dashboard</title>
+    <title>SDG Media Dashboard</title>
     <style>
         :root {
             --primary: #009EDB;
@@ -45,7 +45,7 @@
             color: #000;
             text-decoration: none;
             font-weight: 700;
-            font-size: calc(0.77rem + 3pt); /* 0.77rem + 3pt for increased size */
+            font-size: calc(0.77rem + 3pt);
             padding: 0.25rem 0.5rem 0.15rem 0.5rem;
             border-radius: 0;
             border-bottom: 3px solid transparent;
@@ -147,6 +147,28 @@
             .container { padding: 1rem 0.5rem; }
             .header h1 { font-size: 1.3rem; }
         }
+        /* Dashboard styles */
+        .dashboard-summary {
+            background: var(--accent);
+            border-radius: 10px;
+            padding: 1.2rem 1rem;
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+            color: #222;
+        }
+        .dashboard-table-container table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2rem;
+        }
+        .dashboard-table-container th, .dashboard-table-container td {
+            padding: 8px 6px;
+            border-bottom: 1px solid #e0e0e0;
+            text-align: left;
+        }
+        .dashboard-table-container th {
+            background: #f7f7f7;
+        }
     </style>
 </head>
 <body>
@@ -154,22 +176,25 @@
         <div class="navbar-container">
             <div class="navbar-links">
                 <a href="#overview" class="navbar-link active" id="nav-overview">Overview</a>
-                <a href="#oda" class="navbar-link" id="nav-oda">ODA</a>
+                <a href="#dashboard" class="navbar-link" id="nav-dashboard">Dashboard</a>
                 <a href="#news" class="navbar-link" id="nav-news">News</a>
                 <a href="#method" class="navbar-link" id="nav-method">Method</a>
             </div>
         </div>
     </nav>
     <header class="header">
-        <h1>SDG Media & ODA</h1>
-        <p>Correlating Korean media and ODA budgeting</p>
+        <h1>SDG Media Dashboard</h1>
+        <p>Correlating Korean media and SDG topics</p>
     </header>
     <main class="container">
         <section class="page active" id="page-overview">
             <div class="sdg-grid" id="sdg-grid"></div>
+            <div id="sdg-oda-summary" style="margin-top:2rem;"></div>
         </section>
-        <section class="page" id="page-oda">
-            <div id="oda-content"></div>
+        <section class="page" id="page-dashboard">
+            <h2 style="margin-top:0;">Dashboard</h2>
+            <div class="dashboard-summary" id="dashboard-summary"></div>
+            <div class="dashboard-table-container" id="dashboard-table-container"></div>
         </section>
         <section class="page" id="page-news">
             <div class="placeholder">News<br><span style="font-size:1rem;">(News & SDG analysis will appear here)</span></div>
@@ -183,7 +208,7 @@
         const navLinks = document.querySelectorAll('.navbar-link');
         const pages = {
             overview: document.getElementById('page-overview'),
-            oda: document.getElementById('page-oda'),
+            dashboard: document.getElementById('page-dashboard'),
             news: document.getElementById('page-news'),
             method: document.getElementById('page-method')
         };
@@ -193,6 +218,10 @@
             navLinks.forEach(link => link.classList.remove('active'));
             const nav = document.getElementById('nav-' + page);
             if (nav) nav.classList.add('active');
+            // Dashboard init
+            if (page === 'dashboard' && typeof initDashboard === 'function') {
+                initDashboard();
+            }
         }
         navLinks.forEach(link => {
             link.addEventListener('click', function(e) {
@@ -208,7 +237,7 @@
         });
         // Initial page
         const initial = location.hash.replace('#', '') || 'overview';
-        if (pages[initial]) showPage(initial);
+        if (pages[initial]) showPage(initial;
 
         // SDG icon and label data
         const SDG_ICONS = [
@@ -230,22 +259,167 @@
             { num: 16, label: 'Peace & Justice' },
             { num: 17, label: 'Partnerships' }
         ];
+        // --- DAC Purpose Code to SDG Mapping (expand as needed) ---
+        const PURPOSE_CODE_TO_SDG = {
+            "14010": 6, "14015": 6, "14020": 6, "14030": 6, "14031": 6, "14032": 6, "14040": 6, "14050": 6, "14081": 6,
+            "11110": 4, "11120": 4, "11130": 4, "11220": 4, "11320": 4,
+            "12220": 3, "12230": 3, "12240": 3, "12250": 3, "12261": 3, "13010": 3,
+            "15170": 5,
+            "41010": 13, "41020": 13, "41030": 13, "41040": 13,
+            "16010": 1,
+            // Add more mappings as needed...
+        };
+
+        // --- SDG Grid Render with Click Handler ---
         function renderSDGGrid() {
             const grid = document.getElementById('sdg-grid');
             grid.innerHTML = SDG_ICONS.map(sdg => {
                 const num = String(sdg.num).padStart(2, '0');
                 const iconPath = `src/img/sdg_web/E-WEB-Goal-${num}.png`;
                 return `
-                    <div class="sdg-item">
+                    <div class="sdg-item" data-sdg="${sdg.num}" style="cursor:pointer;">
                         <img src="${iconPath}" alt="SDG ${sdg.num}" onerror="this.style.opacity=0.3;this.src='';">
+                        <div class="sdg-label">${sdg.label}</div>
                     </div>
                 `;
             }).join('');
+            // Add click listeners for ODA summary
+            document.querySelectorAll('.sdg-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const sdgNum = Number(this.getAttribute('data-sdg'));
+                    showOdaForSDG(sdgNum);
+                });
+            });
         }
+
+        // Loads pre-aggregated ODA by SDG from a single JSON file
+        async function loadODABySDG() {
+            // This file should be generated by a script and look like:
+            // { "1": { "total": 123456, "byYear": { "2020": 12345, ... } }, ... }
+            const res = await fetch('src/oda/oda_by_sdg.json');
+            if (!res.ok) throw new Error('Failed to load ODA by SDG');
+            return await res.json();
+        }
+
+        // --- Show ODA for SDG using pre-aggregated data ---
+        async function showOdaForSDG(sdgNum) {
+            const odaSummaryDiv = document.getElementById('sdg-oda-summary');
+            odaSummaryDiv.innerHTML = 'Loading ODA data...';
+
+            // Load pre-aggregated ODA by SDG if not already loaded
+            if (!window._odaBySDG) {
+                try {
+                    window._odaBySDG = await loadODABySDG();
+                } catch (e) {
+                    odaSummaryDiv.innerHTML = `<div style="color:#c00;">Failed to load ODA summary.</div>`;
+                    return;
+                }
+            }
+            const sdgData = window._odaBySDG[String(sdgNum)];
+            if (!sdgData) {
+                odaSummaryDiv.innerHTML = `<div style="margin-top:1rem;color:#c00;">No ODA data for this SDG.</div>`;
+                return;
+            }
+
+            // Build table
+            let html = `<h3 style="margin-top:0.5rem;">ODA for SDG ${sdgNum}: ${SDG_ICONS.find(s=>s.num===sdgNum).label}</h3>`;
+            html += `<div><b>Cumulative ODA:</b> $${sdgData.total.toLocaleString()}</div>`;
+            html += `<table style="margin-top:1rem;"><thead><tr><th>Year</th><th>ODA Spent</th></tr></thead><tbody>`;
+            Object.entries(sdgData.byYear).sort().forEach(([year, oda]) => {
+                html += `<tr><td>${year}</td><td>$${oda.toLocaleString()}</td></tr>`;
+            });
+            html += `</tbody></table>`;
+            odaSummaryDiv.innerHTML = html;
+        }
+
         // Render SDG grid on main page load
         renderSDGGrid();
+
+        // --- Dashboard logic ---
+        async function initDashboard() {
+            const summaryDiv = document.getElementById('dashboard-summary');
+            const tableDiv = document.getElementById('dashboard-table-container');
+            summaryDiv.innerHTML = 'Loading ODA data...';
+            tableDiv.innerHTML = 'Loading data...';
+
+            // Years to load
+            const ODA_YEARS = Array.from({length: 2025-2010+1}, (_,i)=>2010+i);
+            const ODA_DATA_PATH = 'src/oda/processed/oda_';
+
+            let all = [];
+            for (const year of ODA_YEARS) {
+                try {
+                    const res = await fetch(`${ODA_DATA_PATH}${year}.json`);
+                    if (!res.ok) continue;
+                    const data = await res.json();
+                    data.forEach(row => { if (!row.year) row.year = String(year); });
+                    all = all.concat(data);
+                } catch (e) {
+                    // skip missing years
+                }
+            }
+            if (!all.length) {
+                summaryDiv.innerHTML = '';
+                tableDiv.innerHTML = '<span style="color:#c00;">No ODA data found.</span>';
+                return;
+            }
+
+            // Aggregate by SDG
+            const sdgTotals = {};
+            all.forEach(row => {
+                const sdg = row.sdg_focus || row.sdg || 'Unknown';
+                const amount = Number(row.usd_commitment) || 0;
+                if (!sdgTotals[sdg]) sdgTotals[sdg] = 0;
+                sdgTotals[sdg] += amount;
+            });
+
+            // Show summary
+            summaryDiv.innerHTML = `<b>Total ODA (all SDGs):</b> $${Object.values(sdgTotals).reduce((a,b)=>a+b,0).toLocaleString()}`;
+
+            // Table by SDG
+            let html = `<table style="width:100%;margin-top:1em;"><thead><tr><th>SDG</th><th>ODA Spent (USD)</th></tr></thead><tbody>`;
+            Object.entries(sdgTotals).sort((a,b)=>a[0]-b[0]).forEach(([sdg, total]) => {
+                html += `<tr><td>${sdg}</td><td>$${total.toLocaleString()}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            tableDiv.innerHTML = html;
+        }
+        window.initDashboard = initDashboard;
+
+        // --- Sample Data Load ---
+        // For demonstration, we directly use the suggested code change data
+        const sampleData = [
+          {"Project":"Clean Water Initiative","budget":1200000,"Country":"Kenya"},
+          {"Project":"Solar Schools","budget":800000,"Country":"Vietnam"}
+        ];
+        // This part is just to simulate the dashboard update, in real case, it should come from the JSON file
+        document.addEventListener('DOMContentLoaded', () => {
+            const summaryDiv = document.getElementById('dashboard-summary');
+            const tableDiv = document.getElementById('dashboard-table-container');
+            const totalProjects = sampleData.length;
+            const totalBudget = sampleData.reduce((sum, row) => sum + (row.budget || 0), 0);
+            summaryDiv.innerHTML = `
+                <b>Total Projects:</b> ${totalProjects} &nbsp; | &nbsp;
+                <b>Total Budget:</b> $${totalBudget.toLocaleString()}
+            `;
+            const headers = Object.keys(sampleData[0] || {});
+            const table = document.createElement('table');
+            table.innerHTML = `
+                <thead>
+                    <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+                </thead>
+                <tbody>
+                    ${sampleData.map(row => `
+                        <tr>
+                            ${headers.map(h => `<td>${row[h]}</td>`).join('')}
+                        </tr>
+                    `).join('')}
+                </tbody>
+            `;
+            tableDiv.innerHTML = '';
+            tableDiv.appendChild(table);            tableDiv.appendChild(table);
+        });
     </script>
-    <script src="src/oda/papaparse.min.js"></script>
-    <script src="oda.js"></script>
 </body>
+
 </html>

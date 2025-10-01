@@ -330,6 +330,78 @@ function filterODAData(data) {
     return filtered;
 }
 
+// ODA Board: Annual ODA Budget Table for Korea
+
+const ODA_YEARS = Array.from({length: 2025-2010+1}, (_,i)=>2010+i);
+const ODA_DATA_PATH = 'src/oda/processed/oda_';
+
+async function loadAllODAData() {
+    let all = [];
+    for (const year of ODA_YEARS) {
+        try {
+            const res = await fetch(`${ODA_DATA_PATH}${year}.json`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            // Add year to each row if missing
+            data.forEach(row => { if (!row.year) row.year = String(year); });
+            all = all.concat(data);
+        } catch (e) {
+            // skip missing years
+        }
+    }
+    return all;
+}
+
+function renderODABoardTable(data) {
+    // Group by year
+    const years = [...new Set(data.map(row => row.year))].sort((a,b)=>b-a);
+    let html = `
+        <table style="width:100%;border-collapse:collapse;margin-top:1em;">
+            <thead style="background:#F2F2F0;">
+                <tr>
+                    <th style="padding:0.7em 0.5em;">Year</th>
+                    <th style="padding:0.7em 0.5em;">Nation</th>
+                    <th style="padding:0.7em 0.5em;">Type</th>
+                    <th style="padding:0.7em 0.5em;text-align:right;">Amount (USD)</th>
+                    <th style="padding:0.7em 0.5em;">Purpose Code</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    for (const year of years) {
+        const rows = data.filter(row => row.year == year);
+        for (const row of rows) {
+            html += `
+                <tr>
+                    <td style="padding:0.5em 0.3em;">${row.year}</td>
+                    <td style="padding:0.5em 0.3em;">${row.recipient_name || ''}</td>
+                    <td style="padding:0.5em 0.3em;">${row.aid_t || ''}</td>
+                    <td style="padding:0.5em 0.3em;text-align:right;">${row.usd_commitment ? Number(row.usd_commitment).toLocaleString() : ''}</td>
+                    <td style="padding:0.5em 0.3em;">${row.purpose_code || ''}</td>
+                </tr>
+            `;
+        }
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
+async function drawODABoard() {
+    const container = document.getElementById('oda-board');
+    container.innerHTML = '<div style="padding:2em;text-align:center;">Loading ODA data...</div>';
+    const data = await loadAllODAData();
+    if (!data.length) {
+        container.innerHTML = '<div style="padding:2em;text-align:center;color:#aaa;">No ODA data found.</div>';
+        return;
+    }
+    container.innerHTML = renderODABoardTable(data);
+}
+
+// Only run if #oda-board exists (ODA subpage)
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('oda-board')) drawODABoard();
+});
+
 // Only run if ODA page is active on load
 if (window.location.hash.replace('#','') === 'oda') {
     document.addEventListener('DOMContentLoaded', initODASection);
