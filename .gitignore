@@ -22,9 +22,12 @@ yarn-error.log*
 
 # Data files (except examples)
 src/oda/*.csv
+src/oda/*.xlsx
 src/raw/*.xlsx
 src/raw/*.xls
 src/processed/*
+src/news/**/*.csv
+src/news/**/*.xlsx
 !src/oda/.gitkeep
 !src/raw/.gitkeep
 !src/processed/.gitkeep
@@ -39,6 +42,17 @@ temp/
 # Build outputs (if any future build process is added)
 dist/
 build/
+
+# Python virtualenv
+pipeline/.venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# HuggingFace model cache
+pipeline/.cache/
+.cache/
 
 # Environment variables
 .env
