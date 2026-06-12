@@ -1,1 +1,267 @@
-[]
+[
+  {
+    "sdg": 1,
+    "sdg_name": "No Poverty",
+    "n_projects": 230,
+    "commitment_musd": 25.343,
+    "disbursement_musd": 25.283,
+    "net_disbursement_musd": 25.283,
+    "top_recipients": [
+      "사하라 이남 지역 (미배분)",
+      "파키스탄",
+      "아이티"
+    ],
+    "top_sectors": [
+      "긴급구호 조정 및 지원서비스",
+      "사회보호/보장",
+      "사후 재건"
+    ]
+  },
+  {
+    "sdg": 2,
+    "sdg_name": "Zero Hunger",
+    "n_projects": 357,
+    "commitment_musd": 75.755,
+    "disbursement_musd": 37.833,
+    "net_disbursement_musd": 37.047,
+    "top_recipients": [
+      "앙골라",
+      "캄보디아",
+      "필리핀"
+    ],
+    "top_sectors": [
+      "축산",
+      "농업 개발",
+      "농업용수자원"
+    ]
+  },
+  {
+    "sdg": 3,
+    "sdg_name": "Good Health",
+    "n_projects": 536,
+    "commitment_musd": 136.378,
+    "disbursement_musd": 140.986,
+    "net_disbursement_musd": 137.404,
+    "top_recipients": [
+      "베트남",
+      "보스니아헤르체고비나",
+      "아프가니스탄"
+    ],
+    "top_sectors": [
+      "기초의료설비",
+      "의료서비스",
+      "보건정책 및 행정관리"
+    ]
+  },
+  {
+    "sdg": 4,
+    "sdg_name": "Quality Education",
+    "n_projects": 1712,
+    "commitment_musd": 324.402,
+    "disbursement_musd": 150.122,
+    "net_disbursement_musd": 146.317,
+    "top_recipients": [
+      "우즈베키스탄",
+      "탄자니아",
+      "아프가니스탄"
+    ],
+    "top_sectors": [
+      "전문대,대학(원) 교육",
+      "직업훈련(기초,중등수준)",
+      "중고등교육"
+    ]
+  },
+  {
+    "sdg": 5,
+    "sdg_name": "Gender Equality",
+    "n_projects": 42,
+    "commitment_musd": 0.72,
+    "disbursement_musd": 0.72,
+    "net_disbursement_musd": 0.72,
+    "top_recipients": [
+      "아프가니스탄",
+      "서안지구 및 가자지구",
+      "탄자니아"
+    ],
+    "top_sectors": [
+      "성평등 조직(기구) 및 제도"
+    ]
+  },
+  {
+    "sdg": 6,
+    "sdg_name": "Clean Water",
+    "n_projects": 127,
+    "commitment_musd": 283.149,
+    "disbursement_musd": 56.969,
+    "net_disbursement_musd": 53.664,
+    "top_recipients": [
+      "스리랑카",
+      "라오스",
+      "캄보디아"
+    ],
+    "top_sectors": [
+      "식수개발 및 위생처리시설(플랜트 시설 등)에 포함되지 않는 기타",
+      "폐기물 관리 및 처리",
+      "수자원보호"
+    ]
+  },
+  {
+    "sdg": 8,
+    "sdg_name": "Decent Work",
+    "n_projects": 168,
+    "commitment_musd": 7.878,
+    "disbursement_musd": 6.765,
+    "net_disbursement_musd": 6.765,
+    "top_recipients": [
+      "베트남",
+      "요르단",
+      "인도네시아"
+    ],
+    "top_sectors": [
+      "비즈니스 정책 및 행정관리",
+      "금융정책 및 행정관리",
+      "무역진흥"
+    ]
+  },
+  {
+    "sdg": 9,
+    "sdg_name": "Industry & Innovation",
+    "n_projects": 1065,
+    "commitment_musd": 424.426,
+    "disbursement_musd": 206.012,
+    "net_disbursement_musd": 191.965,
+    "top_recipients": [
+      "베트남",
+      "방글라데시",
+      "필리핀"
+    ],
+    "top_sectors": [
+      "도로운송",
+      "정보통신기술",
+      "철도운송"
+    ]
+  },
+  {
+    "sdg": 10,
+    "sdg_name": "Reduced Inequality",
+    "n_projects": 68,
+    "commitment_musd": 2.996,
+    "disbursement_musd": 2.996,
+    "net_disbursement_musd": 1.58,
+    "top_recipients": [
+      "그외 지역 또는 다수국가 (미배분)",
+      "인도네시아",
+      "페루"
+    ],
+    "top_sectors": [
+      "문화 및 레크리에이션",
+      "통계능력 강화"
+    ]
+  },
+  {
+    "sdg": 11,
+    "sdg_name": "Sustainable Cities",
+    "n_projects": 274,
+    "commitment_musd": 107.978,
+    "disbursement_musd": 108.831,
+    "net_disbursement_musd": 108.83,
+    "top_recipients": [
+      "아프가니스탄",
+      "아프리카 지역 (미배분)",
+      "아시아 지역 (미배분)"
+    ],
+    "top_sectors": [
+      "다부문 원조",
+      "농촌개발",
+      "도시개발 및 관리"
+    ]
+  },
+  {
+    "sdg": 13,
+    "sdg_name": "Climate Action",
+    "n_projects": 116,
+    "commitment_musd": 12.073,
+    "disbursement_musd": 12.626,
+    "net_disbursement_musd": 12.626,
+    "top_recipients": [
+      "몽골",
+      "베트남",
+      "스리랑카"
+    ],
+    "top_sectors": [
+      "환경정책 및 행정관리",
+      "생물권역 보호",
+      "환경연구"
+    ]
+  },
+  {
+    "sdg": 14,
+    "sdg_name": "Life Below Water",
+    "n_projects": 63,
+    "commitment_musd": 7.761,
+    "disbursement_musd": 3.405,
+    "net_disbursement_musd": 3.164,
+    "top_recipients": [
+      "알제리",
+      "필리핀",
+      "키리바시"
+    ],
+    "top_sectors": [
+      "어업 개발",
+      "어업정책 및 행정관리",
+      "어업 교육/훈련"
+    ]
+  },
+  {
+    "sdg": 15,
+    "sdg_name": "Life on Land",
+    "n_projects": 40,
+    "commitment_musd": 8.182,
+    "disbursement_musd": 9.405,
+    "net_disbursement_musd": 9.405,
+    "top_recipients": [
+      "필리핀",
+      "몽골",
+      "중국"
+    ],
+    "top_sectors": [
+      "임업 개발",
+      "임업정책 및 행정관리",
+      "임업 교육/훈련"
+    ]
+  },
+  {
+    "sdg": 16,
+    "sdg_name": "Peace & Justice",
+    "n_projects": 516,
+    "commitment_musd": 153.009,
+    "disbursement_musd": 48.589,
+    "net_disbursement_musd": 48.235,
+    "top_recipients": [
+      "세네갈",
+      "스리랑카",
+      "몽골"
+    ],
+    "top_sectors": [
+      "공공정책 및 행정관리",
+      "입법 및 사법제도 개발",
+      "공공재정관리"
+    ]
+  },
+  {
+    "sdg": 17,
+    "sdg_name": "Partnerships",
+    "n_projects": 22,
+    "commitment_musd": 40.752,
+    "disbursement_musd": 40.752,
+    "net_disbursement_musd": 40.752,
+    "top_recipients": [
+      "그외 지역 또는 다수국가 (미배분)",
+      "가나"
+    ],
+    "top_sectors": [
+      "행정비용",
+      "채무재조정/리파이낸스"
+    ]
+  }
+]
