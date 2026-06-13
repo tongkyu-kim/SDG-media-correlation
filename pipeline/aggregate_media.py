@@ -65,9 +65,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BASE_DIR  = Path(__file__).parent.parent
-NEWS_DIR  = BASE_DIR / "src" / "news"
-OUT_DIR   = BASE_DIR / "src" / "media"
+BASE_DIR      = Path(__file__).parent.parent
+NEWS_DIR      = BASE_DIR / "src" / "news"
+PROCESSED_DIR = BASE_DIR / "src" / "processed" / "news"
+OUT_DIR       = BASE_DIR / "src" / "processed" / "media"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -116,7 +117,7 @@ def extract_articles(csv_path: Path) -> pd.DataFrame:
       year, month, sdg (list), country_iso3 (list), provider,
       sentiment_label, sentiment_score, is_classified
     """
-    classified_path = csv_path.with_name(csv_path.stem + "_classified.csv")
+    classified_path = PROCESSED_DIR / csv_path.parent.name / (csv_path.stem + "_classified.csv")
     use_classified = classified_path.exists()
 
     try:

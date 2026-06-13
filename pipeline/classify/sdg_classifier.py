@@ -1,179 +1,277 @@
 """
 SDG Classifier for Korean news articles.
 
-Pipeline:
-  1. Korean keyword pre-screen  — fast catch of obvious matches
-  2. Korean → English translation  (Helsinki-NLP/opus-mt-tc-big-ko-en)
-  3. SDG classification on translated text  (jonas/sdg_classifier_osdg)
+Two-step method:
+  1. Helsinki-NLP/opus-mt-ko-en  — translate Korean text to English
+  2. intfloat/multilingual-e5-base — embed translated English text
+  3. Cosine similarity against English-only ODA/development-specific anchors
 
-Using a translation step rather than a multilingual SDG model gives better
-accuracy: the English OSDG model was trained on a large labelled dataset while
-multilingual SDG fine-tunes are scarce and often undertrained for Korean.
+Why translation?  Multilingual-e5 cannot separate "domestic Korean health"
+from "global health ODA" in the Korean embedding space — both are "health."
+After translation to English, "erectile dysfunction drug" produces a very
+different embedding from "malaria treatment in sub-Saharan Africa."
+
+English-only development anchors (SDG_ANCHORS below) are explicitly framed
+around ODA, developing countries, Africa/Asia/recipient countries so that
+domestic Korean articles score below the relevance threshold even if they
+mention an SDG topic in a domestic context.
 
 Intensity mapping (0–3):
-  final_score < 0.25  →  0  (not relevant)
-  0.25 – 0.45         →  1  (indirectly mentioned)
-  0.45 – 0.65         →  2  (moderately related)
-  ≥ 0.65              →  3  (core focus)
+  similarity < 0.35  →  0  (not development-relevant)
+  0.35 – 0.50        →  1  (indirectly mentioned)
+  0.50 – 0.65        →  2  (moderately related)
+  ≥ 0.65             →  3  (core focus)
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import List
 
 import torch
+import numpy as np
 
 from classify.keywords_ko import keyword_scores
 
 logger = logging.getLogger(__name__)
 
-TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-tc-big-ko-en"
-SDG_MODEL       = "jonas/sdg_classifier_osdg"
-MAX_TOKENS      = 512
+TRANSLATE_MODEL   = "Helsinki-NLP/opus-mt-ko-en"
+EMBED_MODEL       = "intfloat/multilingual-e5-base"
+SIM_THRESHOLD     = 0.35          # lower than before — English anchors score lower overall
+KEYWORD_BOOST_PER_HIT = 0.03
+MAX_KEYWORD_BOOST     = 0.15
 
-KEYWORD_BOOST_PER_HIT = 0.04
-MAX_KEYWORD_BOOST     = 0.20
+# ── English-only ODA/development SDG anchor texts ────────────────────────────
+# Anchors are explicitly framed as INTERNATIONAL DEVELOPMENT contexts.
+# After Korean→English translation, domestic articles score far below threshold.
+
+SDG_ANCHORS: dict[int, str] = {
+    1: (
+        "Extreme poverty reduction through ODA in developing countries. "
+        "International aid for the poorest populations in Africa, Asia, Latin America. "
+        "Social protection programs in least developed countries. "
+        "Humanitarian assistance for vulnerable people. "
+        "KOICA poverty alleviation projects in recipient countries."
+    ),
+    2: (
+        "Hunger relief and food security in developing countries. "
+        "Famine response and malnutrition programs in Africa and Asia. "
+        "World Food Programme WFP food aid and emergency feeding. "
+        "Agricultural development ODA in recipient countries. "
+        "Nutrition support for children in least developed countries."
+    ),
+    3: (
+        "International health aid in developing countries through ODA. "
+        "Malaria HIV AIDS tuberculosis Ebola outbreak response in Africa and Asia. "
+        "Maternal and child mortality reduction in recipient countries. "
+        "Health system strengthening through official development assistance. "
+        "WHO global health programs. KOICA health sector projects in developing countries."
+    ),
+    4: (
+        "Education aid in developing countries through ODA. "
+        "School construction and literacy programs in Africa and Asia. "
+        "UNESCO education for all goals. Vocational training in recipient countries. "
+        "Scholarship programs for developing country students. "
+        "KOICA education projects in least developed countries."
+    ),
+    5: (
+        "Gender equality and women empowerment in developing countries through ODA. "
+        "Gender-based violence and child marriage in Africa Asia Middle East. "
+        "Reproductive health programs in recipient countries. "
+        "Girls education in developing countries. "
+        "UN Women programs. Female empowerment through international development."
+    ),
+    6: (
+        "Clean water and sanitation access in developing countries through ODA. "
+        "WASH programs in Africa and Asia. "
+        "Drinking water infrastructure aid in recipient countries. "
+        "Wastewater treatment development assistance. "
+        "Hygiene improvement projects in least developed countries."
+    ),
+    7: (
+        "Energy access through ODA in developing countries. "
+        "Renewable energy solar off-grid electricity in Africa and Asia. "
+        "Clean cooking energy programs in recipient countries. "
+        "Energy poverty reduction through international development assistance. "
+        "KOICA energy projects in least developed countries."
+    ),
+    8: (
+        "Economic growth and employment in developing countries through ODA. "
+        "Job creation and labour rights in Africa and Asia. "
+        "Trade capacity building in recipient countries. "
+        "SME development assistance in least developed countries. "
+        "Economic cooperation with developing countries through international aid."
+    ),
+    9: (
+        "Infrastructure development ODA in developing countries. "
+        "Road bridge port construction aid in Africa and Asia. "
+        "Transport telecommunications industrialization in recipient countries. "
+        "Technology transfer through international development assistance. "
+        "KOICA infrastructure projects in developing countries."
+    ),
+    10: (
+        "Inequality reduction in developing countries through ODA. "
+        "Migration refugees remittances in international development context. "
+        "Income gap and social exclusion in Africa and Asia. "
+        "Inclusive development programs for marginalized populations in recipient countries."
+    ),
+    11: (
+        "Urban development and disaster risk reduction in developing countries through ODA. "
+        "Slum improvement housing programs in Africa and Asia. "
+        "Disaster recovery assistance in recipient countries. "
+        "Urban infrastructure development in least developed countries."
+    ),
+    12: (
+        "Sustainable consumption and production in developing countries through ODA. "
+        "Waste management and resource efficiency programs in Africa and Asia. "
+        "Environmental sustainability in recipient countries through international aid. "
+        "Green economy development in least developed countries."
+    ),
+    13: (
+        "Climate change adaptation in developing countries through ODA. "
+        "Flood drought disaster response in Africa Asia Pacific vulnerable countries. "
+        "Climate finance Green Climate Fund for least developed countries. "
+        "Sea level rise threat to small island developing states. "
+        "Climate aid and adaptation programs in recipient countries."
+    ),
+    14: (
+        "Marine and fisheries development in developing countries through ODA. "
+        "Ocean conservation programs in Africa Asia Pacific. "
+        "Sustainable fishing assistance in small island developing states. "
+        "Coral reef protection and marine ecosystem international development aid."
+    ),
+    15: (
+        "Forest and biodiversity conservation in developing countries through ODA. "
+        "Desertification and land degradation response in Africa and Asia. "
+        "Deforestation prevention international aid programs. "
+        "Wildlife trafficking control and ecosystem restoration in recipient countries."
+    ),
+    16: (
+        "Peace and governance support in developing countries through ODA. "
+        "Post-conflict reconstruction in Africa Asia Middle East fragile states. "
+        "Democracy rule of law anti-corruption programs in recipient countries. "
+        "Election support human rights international development. "
+        "KOICA governance projects in developing countries."
+    ),
+    17: (
+        "ODA official development assistance Korea KOICA EDCF international cooperation. "
+        "Development finance aid effectiveness in recipient countries. "
+        "Capacity building technology transfer in developing countries. "
+        "Korean foreign aid programs South Korea development cooperation. "
+        "Partnership for sustainable development goals in recipient countries."
+    ),
+}
 
 
 @dataclass
 class SDGResult:
-    sdg_label:    int         # primary SDG 1–17, 0 = not classified
-    sdg_score:    float       # fused confidence 0.0–1.0
-    sdg_intensity: int        # 0–3
-    all_scores:   dict = field(default_factory=dict)
+    sdg_label:     int
+    sdg_score:     float
+    sdg_intensity: int
+    all_scores:    dict = field(default_factory=dict)
 
 
-def _score_to_intensity(score: float) -> int:
-    if score < 0.25: return 0
-    if score < 0.45: return 1
+def _sim_to_intensity(score: float) -> int:
+    if score < 0.35: return 0
+    if score < 0.50: return 1
     if score < 0.65: return 2
     return 3
 
 
 class SDGClassifier:
     """
-    Korean → English translation + OSDG BERT classifier + keyword boost.
-    Both models are lazy-loaded on first use.
+    Two-step SDG classifier: Korean→English translation, then E5 cosine similarity.
     """
 
     def __init__(self, device: str | None = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._translator = None
-        self._classifier = None
-        self._label_map: dict[str, int] = {}
-
-    # ── Model loading ─────────────────────────────────────────────────────────
+        self._translator    = None   # Helsinki-NLP MarianMT pipeline
+        self._embed_model   = None   # SentenceTransformer E5
+        self._sdg_embeddings: np.ndarray | None = None
+        self._sdg_ids: list[int] = list(range(1, 18))
 
     def _load_translator(self) -> None:
         if self._translator is not None:
             return
         from transformers import MarianMTModel, MarianTokenizer
-        logger.info("Loading translation model %s ...", TRANSLATE_MODEL)
-        self._tok = MarianTokenizer.from_pretrained(TRANSLATE_MODEL)
-        self._mt  = MarianMTModel.from_pretrained(TRANSLATE_MODEL)
+        logger.info("Loading translation model %s on %s ...", TRANSLATE_MODEL, self.device)
+        tokenizer = MarianTokenizer.from_pretrained(TRANSLATE_MODEL)
+        model     = MarianMTModel.from_pretrained(TRANSLATE_MODEL)
         if self.device == "cuda":
-            self._mt = self._mt.cuda()
-        self._mt.eval()
-        self._translator = True   # sentinel: models are loaded
+            model = model.cuda()
+        model.eval()
+        self._translator = (tokenizer, model)
         logger.info("Translation model ready.")
 
-    def _load_classifier(self) -> None:
-        if self._classifier is not None:
+    def _load(self) -> None:
+        if self._embed_model is not None:
             return
-        from transformers import pipeline as hf_pipeline
-        logger.info("Loading SDG model %s ...", SDG_MODEL)
-        self._classifier = hf_pipeline(
-            "text-classification",
-            model=SDG_MODEL,
-            tokenizer=SDG_MODEL,
-            top_k=None,
-            device=0 if self.device == "cuda" else -1,
-            truncation=True,
-            max_length=MAX_TOKENS,
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model %s on %s ...", EMBED_MODEL, self.device)
+        self._embed_model = SentenceTransformer(EMBED_MODEL, device=self.device)
+        anchors = [f"passage: {SDG_ANCHORS[sdg]}" for sdg in self._sdg_ids]
+        self._sdg_embeddings = self._embed_model.encode(
+            anchors,
+            batch_size=17,
+            normalize_embeddings=True,
+            show_progress_bar=False,
         )
-        # Build label → SDG int map
-        id2label: dict = self._classifier.model.config.id2label
-        for idx, lbl in id2label.items():
-            m = re.search(r"(\d+)", str(lbl))
-            if m:
-                key = f"LABEL_{idx}"
-                self._label_map[key] = int(m.group(1))
-                self._label_map[lbl] = int(m.group(1))
-        logger.info("SDG model ready. %d labels mapped.", len(self._label_map))
+        logger.info("SDG embeddings ready. Shape: %s", self._sdg_embeddings.shape)
 
-    # ── Translation ───────────────────────────────────────────────────────────
-
-    def _translate(self, texts: List[str]) -> List[str]:
-        """Translate a batch of Korean texts to English via MarianMT."""
-        import torch
-        inputs = self._tok(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=400,
-        )
-        if self.device == "cuda":
-            inputs = {k: v.cuda() for k, v in inputs.items()}
+    def _translate_batch(self, texts: List[str], batch_size: int = 64) -> List[str]:
+        self._load_translator()
+        tokenizer, model = self._translator
+        results: list[str] = []
+        device = next(model.parameters()).device
         with torch.no_grad():
-            translated = self._mt.generate(**inputs)
-        return [self._tok.decode(t, skip_special_tokens=True) for t in translated]
+            for i in range(0, len(texts), batch_size):
+                chunk = [t[:400] for t in texts[i : i + batch_size]]
+                tok = tokenizer(chunk, return_tensors="pt", padding=True,
+                                truncation=True, max_length=256)
+                tok = {k: v.to(device) for k, v in tok.items()}
+                gen = model.generate(**tok)
+                decoded = tokenizer.batch_decode(gen, skip_special_tokens=True)
+                results.extend(decoded)
+        return results
 
-    # ── Fusion ────────────────────────────────────────────────────────────────
-
-    def _fuse(self, model_scores: dict[int, float], original_ko: str) -> dict[int, float]:
-        """Boost model scores using Korean keyword matches on original text."""
+    def _raw_to_result(self, similarities: np.ndarray, original_ko: str) -> SDGResult:
         kw = keyword_scores(original_ko)
-        fused = dict(model_scores)
+        fused = {sdg: float(similarities[i]) for i, sdg in enumerate(self._sdg_ids)}
         for sdg, hits in kw.items():
             boost = min(hits * KEYWORD_BOOST_PER_HIT, MAX_KEYWORD_BOOST)
             fused[sdg] = min(1.0, fused.get(sdg, 0.0) + boost)
-        return fused
 
-    def _raw_to_result(self, raw: list, original_ko: str) -> SDGResult:
-        model_scores: dict[int, float] = {}
-        for item in raw:
-            lbl = item["label"]
-            sdg_num = self._label_map.get(lbl) or self._label_map.get(f"LABEL_{lbl}")
-            if sdg_num:
-                model_scores[sdg_num] = float(item["score"])
-
-        fused = self._fuse(model_scores, original_ko)
-        if not fused:
-            return SDGResult(0, 0.0, 0)
-
-        top = max(fused, key=fused.__getitem__)
+        top   = max(fused, key=fused.__getitem__)
         score = fused[top]
         return SDGResult(
-            sdg_label    = top if score >= 0.25 else 0,
+            sdg_label    = top if score >= SIM_THRESHOLD else 0,
             sdg_score    = round(score, 4),
-            sdg_intensity= _score_to_intensity(score),
+            sdg_intensity= _sim_to_intensity(score),
             all_scores   = {k: round(v, 4) for k, v in fused.items()},
         )
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
-    def classify_batch(self, texts: List[str], batch_size: int = 32) -> List[SDGResult]:
+    def classify_batch(self, texts: List[str], batch_size: int = 128) -> List[SDGResult]:
         self._load_translator()
-        self._load_classifier()
+        self._load()
 
-        results = []
-        for i in range(0, len(texts), batch_size):
-            batch_ko = [t[:600] for t in texts[i : i + batch_size]]
+        logger.info("Translating %d texts ko→en ...", len(texts))
+        translated = self._translate_batch(texts, batch_size=min(64, batch_size))
 
-            # Translate Korean → English
-            batch_en = self._translate(batch_ko)
+        # E5 uses "query:" prefix for texts being compared against passages
+        prefixed = [f"query: {t[:512]}" for t in translated]
+        article_embeddings = self._embed_model.encode(
+            prefixed,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        similarities = article_embeddings @ self._sdg_embeddings.T  # (n, 17)
 
-            # Classify translated text
-            raw_batch = self._classifier(batch_en)
-
-            for ko_text, raw in zip(batch_ko, raw_batch):
-                results.append(self._raw_to_result(raw, ko_text))
-
-        return results
+        return [
+            self._raw_to_result(similarities[i], texts[i])
+            for i in range(len(texts))
+        ]
 
     def classify(self, text: str) -> SDGResult:
         return self.classify_batch([text])[0]
