@@ -20,14 +20,14 @@ This repository supports research into whether Korean news media attention to Su
 SDG-media-correlation/
 │
 ├── src/
-│   ├── oda/                        # Raw ODA data (Excel)
+│   ├── oda/                        # Raw ODA data (csv)
 │   └── news/                       # BigKinds weekly news exports
 │       ├── 2010/
-│       ├── 2016/
-│       ├── 2017/
-│       ├── 2018/
-│       ├── 2019/
-│       └── ...
+│       ├── 2011/
+│       ├── 2012/
+│       ├── 2013/
+│       ├── ...
+│       └── 2019
 │
 ├── pipeline/                       # Python data pipeline
 │   ├── config.py                   # Paths, credentials, settings
