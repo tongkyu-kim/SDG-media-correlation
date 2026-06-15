@@ -1,11 +1,12 @@
 """
 ODA dataset preprocessor.
 
-Input:  src/oda/korea_oda data.xlsx  (83k rows, 2010-2023)
-Output:
-  src/oda/oda_clean.csv              — full normalized dataset
-  src/oda/processed/oda_YYYY.json    — per-year SDG aggregation for dashboard
-  src/oda/oda_sdg_annual.csv         — wide table: year × SDG disbursement totals
+Input:  src/oda/korea_oda data.xlsx  (~83k rows, 2010-2023)
+
+Outputs (all in src/processed/oda/):
+  oda_clean.csv               — project-level, full normalized dataset with SDG + ISO3
+  oda_sdg_annual.csv          — year × SDG aggregation  (input for Panel A/B)
+  oda_country_sdg_annual.csv  — year × country_iso3 × SDG  (input for Panel C, primary)
 
 SDG assignment methodology (three-tier priority):
   1. Direct SDG tag — parsed from the dataset's own 'SDGs' field (~27% of rows).
@@ -28,7 +29,6 @@ SDG assignment methodology (three-tier priority):
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 import io
@@ -42,11 +42,15 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 BASE_DIR  = Path(__file__).parent.parent
 ODA_FILE  = BASE_DIR / "src" / "oda" / "korea_oda data.xlsx"
-OUT_DIR   = BASE_DIR / "src" / "oda" / "processed"
-OUT_CSV   = BASE_DIR / "src" / "oda" / "oda_clean.csv"
-OUT_ANNUAL = BASE_DIR / "src" / "oda" / "oda_sdg_annual.csv"
-
+OUT_DIR   = BASE_DIR / "src" / "processed" / "oda"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+OUT_CLEAN         = OUT_DIR / "oda_clean.csv"
+OUT_SDG_ANNUAL    = OUT_DIR / "oda_sdg_annual.csv"
+OUT_COUNTRY_SDG   = OUT_DIR / "oda_country_sdg_annual.csv"
+
+sys.path.insert(0, str(Path(__file__).parent))
+from reference.countries_ko import ko_to_iso3, ko_to_english
 
 # ── Column rename map ─────────────────────────────────────────────────────────
 COL_MAP = {
@@ -90,16 +94,15 @@ COL_MAP = {
 # Where a sector spans multiple SDGs the most prominent goal is assigned
 # (consistent with Pincet et al., 2019, OECD Working Paper No. 52).
 
-# 5-digit exact overrides for codes that differ from their group's default
 CRS_EXACT_TO_SDG: dict[str, int] = {
-    # SDG 1 — No Poverty: social protection & humanitarian
+    # SDG 1 — No Poverty
     "16010": 1, "16020": 1, "16050": 1,
     "72010": 1, "72040": 1, "72050": 1,
     "73010": 1,
-    # SDG 2 — Zero Hunger: agriculture & food security
+    # SDG 2 — Zero Hunger
     "31161": 2, "31162": 2, "31163": 2, "31164": 2, "31165": 2, "31166": 2,
     "31182": 2, "31191": 2, "31192": 2, "31193": 2, "31194": 2, "31195": 2,
-    "52010": 2,  # food aid
+    "52010": 2,
     # SDG 3 — Good Health
     "12110": 3, "12181": 3, "12182": 3, "12191": 3, "12196": 3,
     "12220": 3, "12230": 3, "12240": 3, "12250": 3,
@@ -141,7 +144,7 @@ CRS_EXACT_TO_SDG: dict[str, int] = {
     # SDG 13 — Climate Action
     "41010": 13, "41020": 13, "41030": 13,
     "41040": 13, "41050": 13, "41081": 13, "41082": 13,
-    "74010": 13,  # disaster risk reduction
+    "74010": 13,
     # SDG 14 — Life Below Water
     "31310": 14, "31320": 14, "31381": 14, "31382": 14, "31391": 14,
     # SDG 15 — Life on Land
@@ -161,45 +164,43 @@ CRS_EXACT_TO_SDG: dict[str, int] = {
     # SDG 17 — Partnerships for the Goals
     "60010": 17, "60020": 17, "60030": 17, "60040": 17,
     "60061": 17, "60062": 17, "60063": 17,
-    "91010": 17,  # administrative costs
+    "91010": 17,
 }
 
-# 3-digit sector-group fallback (covers codes not in exact table)
 CRS_PREFIX_TO_SDG: dict[str, int] = {
-    "111": 4, "112": 4, "113": 4, "114": 4,   # Education → SDG 4
-    "121": 3, "122": 3, "123": 3,              # Health → SDG 3
-    "130": 3,                                   # Population/reproductive → SDG 3
-    "140": 6,                                   # Water & sanitation → SDG 6
-    "151": 16, "152": 16, "153": 16,            # Govt & civil society → SDG 16
-    "160": 1,                                   # Other social → SDG 1 (poverty/protection)
-    "210": 9,                                   # Transport → SDG 9
-    "220": 9,                                   # Communications → SDG 9
-    "230": 7,                                   # Energy → SDG 7
-    "240": 8,                                   # Banking/finance → SDG 8
-    "250": 8,                                   # Business services → SDG 8
-    "311": 2,                                   # Agriculture → SDG 2
-    "312": 15,                                  # Forestry → SDG 15
-    "313": 14,                                  # Fishing → SDG 14
-    "321": 9,                                   # Industry → SDG 9
-    "322": 9,                                   # Mineral resources → SDG 9
-    "323": 11,                                  # Construction → SDG 11
-    "331": 8,                                   # Trade → SDG 8
-    "332": 8,                                   # Tourism → SDG 8
-    "410": 13,                                  # Environment → SDG 13
-    "420": 5,                                   # Women in development → SDG 5
-    "430": 11,                                  # Multisector → SDG 11 (urban/rural mix)
-    "431": 2,                                   # Rural development → SDG 2
-    "432": 11,                                  # Urban development → SDG 11
-    "520": 2,                                   # Food aid → SDG 2
-    "600": 17,                                  # Debt relief → SDG 17
-    "720": 1, "730": 1,                         # Humanitarian → SDG 1
-    "740": 13,                                  # Disaster prevention → SDG 13
-    "910": 17, "930": 17,                       # Admin/refugees → SDG 17
+    "111": 4, "112": 4, "113": 4, "114": 4,
+    "121": 3, "122": 3, "123": 3,
+    "130": 3,
+    "140": 6,
+    "151": 16, "152": 16, "153": 16,
+    "160": 1,
+    "210": 9,
+    "220": 9,
+    "230": 7,
+    "240": 8,
+    "250": 8,
+    "311": 2,
+    "312": 15,
+    "313": 14,
+    "321": 9,
+    "322": 9,
+    "323": 11,
+    "331": 8,
+    "332": 8,
+    "410": 13,
+    "420": 5,
+    "430": 11,
+    "431": 2,
+    "432": 11,
+    "520": 2,
+    "600": 17,
+    "720": 1, "730": 1,
+    "740": 13,
+    "910": 17, "930": 17,
 }
 
 
 def parse_crs_code(sector_code_raw) -> Optional[str]:
-    """Extract the first 5-digit CRS code from a potentially comma-separated field."""
     if pd.isna(sector_code_raw):
         return None
     first = str(sector_code_raw).split(",")[0].strip()
@@ -208,7 +209,6 @@ def parse_crs_code(sector_code_raw) -> Optional[str]:
 
 
 def parse_sdg_tag(raw) -> Optional[int]:
-    """Parse direct SDG tag: '16.5' → 16, '3' → 3, NaN → None."""
     if pd.isna(raw):
         return None
     m = re.match(r"(\d+)", str(raw).strip())
@@ -219,36 +219,21 @@ def parse_sdg_tag(raw) -> Optional[int]:
 
 
 def crs_to_sdg(sector_code_raw) -> Optional[int]:
-    """
-    Map a CRS purpose code to an SDG using OECD DCD/DAC/STAT(2015)9 Annex 3.
-    Tries 5-digit exact match first, then 3-digit sector-group fallback.
-    """
     code = parse_crs_code(sector_code_raw)
     if not code:
         return None
-    # Exact 5-digit match
     if code in CRS_EXACT_TO_SDG:
         return CRS_EXACT_TO_SDG[code]
-    # 3-digit prefix fallback
-    prefix = code[:3]
-    return CRS_PREFIX_TO_SDG.get(prefix)
+    return CRS_PREFIX_TO_SDG.get(code[:3])
 
 
 def infer_sdg(row) -> Optional[int]:
-    """
-    Assign SDG to a row using three-tier priority (see module docstring).
-    """
-    # Priority 1: direct tag from dataset
     sdg = parse_sdg_tag(row.get("sdg_tag_raw"))
     if sdg:
         return sdg
-
-    # Priority 2: CRS purpose code (OECD crosswalk)
     sdg = crs_to_sdg(row.get("sector_code"))
     if sdg:
         return sdg
-
-    # Priority 3: cross-cutting policy markers (주요 = significant, 부분 = partial)
     for col, sdg_num in [
         ("marker_climate_mitigation", 13),
         ("marker_climate_adaptation", 13),
@@ -258,7 +243,6 @@ def infer_sdg(row) -> Optional[int]:
         val = str(row.get(col, "") or "").strip()
         if val in ("주요", "부분"):
             return sdg_num
-
     return None
 
 
@@ -266,13 +250,12 @@ def infer_sdg(row) -> Optional[int]:
 
 print("Loading ODA xlsx ...")
 df_raw = pd.read_excel(ODA_FILE, sheet_name=0, dtype=str)
-print(f"  {len(df_raw)} rows, {len(df_raw.columns)} columns loaded.")
+print(f"  {len(df_raw):,} rows, {len(df_raw.columns)} columns loaded.")
 
-# Rename known columns; keep unnamed ones for safety
+# Rename known columns
 rename = {}
 for ko, en in COL_MAP.items():
-    # Handle \n in column names from Excel
-    matches = [c for c in df_raw.columns if c.replace("\n", "\n") == ko]
+    matches = [c for c in df_raw.columns if c == ko]
     if matches:
         rename[matches[0]] = en
 
@@ -284,9 +267,28 @@ for col in ["commitment_musd", "disbursement_musd", "net_disbursement_musd",
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-# Year as int
 if "year" in df.columns:
     df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
+
+# ── Country ISO3 mapping ──────────────────────────────────────────────────────
+
+print("Adding ISO3 country codes ...")
+if "recipient_country" in df.columns:
+    df["country_iso3"]      = df["recipient_country"].apply(ko_to_iso3)
+    df["recipient_country_en"] = df["recipient_country"].apply(ko_to_english)
+
+n_mapped   = df["country_iso3"].notna().sum()
+n_unmapped = df["country_iso3"].isna().sum()
+print(f"  Mapped: {n_mapped:,}  |  Unmapped (regional/unspecified): {n_unmapped:,}")
+
+if n_unmapped > 0:
+    top_unmapped = (
+        df[df["country_iso3"].isna()]["recipient_country"]
+        .value_counts().head(10)
+    )
+    print("  Top unmapped recipient_country values:")
+    for name, cnt in top_unmapped.items():
+        print(f"    {name}: {cnt:,}")
 
 # ── SDG assignment ────────────────────────────────────────────────────────────
 
@@ -304,15 +306,17 @@ n_tagged   = (df["sdg_source"] == "direct_tag").sum()
 n_sector   = (df["sdg_source"] == "sector_code").sum()
 n_marker   = (df["sdg_source"] == "marker").sum()
 n_untagged = df["sdg"].isna().sum()
-print(f"  Direct SDG tag:   {n_tagged:,}")
-print(f"  Sector code map:  {n_sector:,}")
-print(f"  Marker:           {n_marker:,}")
-print(f"  Unassigned:       {n_untagged:,}")
+print(f"  Direct SDG tag:   {n_tagged:,}  ({n_tagged/len(df)*100:.1f}%)")
+print(f"  Sector code map:  {n_sector:,}  ({n_sector/len(df)*100:.1f}%)")
+print(f"  Marker:           {n_marker:,}  ({n_marker/len(df)*100:.1f}%)")
+print(f"  Unassigned:       {n_untagged:,}  ({n_untagged/len(df)*100:.1f}%)")
 
-# ── Save full clean CSV ───────────────────────────────────────────────────────
+# ── Save oda_clean.csv ────────────────────────────────────────────────────────
 
 keep_cols = [c for c in [
-    "project_id", "year", "agency", "recipient_country", "region",
+    "project_id", "year", "agency",
+    "recipient_country", "recipient_country_en", "country_iso3", "region",
+    "project_type", "bilateral_multilateral", "fund_type",
     "aid_form", "aid_type", "aid_type_code",
     "sector", "sector_code",
     "project_name_ko", "project_name_en",
@@ -324,96 +328,72 @@ keep_cols = [c for c in [
 ] if c in df.columns]
 
 df_clean = df[keep_cols].copy()
-df_clean.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-print(f"\nWrote full clean CSV: {OUT_CSV.name}  ({len(df_clean):,} rows)")
+df_clean.to_csv(OUT_CLEAN, index=False, encoding="utf-8-sig")
+print(f"\nWrote oda_clean.csv: {len(df_clean):,} rows, {len(keep_cols)} columns")
 
-# ── Per-year SDG aggregation ──────────────────────────────────────────────────
+# ── oda_sdg_annual.csv — year × SDG ──────────────────────────────────────────
 
-print("\nBuilding per-year SDG aggregations ...")
-
-SDG_NAMES = {
-    1:"No Poverty", 2:"Zero Hunger", 3:"Good Health", 4:"Quality Education",
-    5:"Gender Equality", 6:"Clean Water", 7:"Clean Energy", 8:"Decent Work",
-    9:"Industry & Innovation", 10:"Reduced Inequality", 11:"Sustainable Cities",
-    12:"Responsible Consumption", 13:"Climate Action", 14:"Life Below Water",
-    15:"Life on Land", 16:"Peace & Justice", 17:"Partnerships",
-}
-
+print("\nBuilding oda_sdg_annual.csv ...")
 df_sdg = df_clean[df_clean["sdg"].notna()].copy()
-df_sdg["sdg"] = df_sdg["sdg"].astype(int)
+df_sdg["sdg"]  = df_sdg["sdg"].astype(int)
+df_sdg["year"] = df_sdg["year"].astype(int)
 
-years = sorted(df_clean["year"].dropna().unique().tolist())
-
-for yr in years:
-    yr = int(yr)
-    yr_df = df_sdg[df_sdg["year"] == yr]
-
-    # Aggregate by SDG
-    agg = (
-        yr_df.groupby("sdg")
-        .agg(
-            n_projects        = ("project_id", "count"),
-            commitment_musd   = ("commitment_musd", "sum"),
-            disbursement_musd = ("disbursement_musd", "sum"),
-            net_disbursement_musd = ("net_disbursement_musd", "sum"),
-        )
-        .reset_index()
-        .rename(columns={"sdg": "sdg_label"})
-    )
-
-    # Top recipient countries per SDG
-    top_recipients = (
-        yr_df.groupby(["sdg", "recipient_country"])["disbursement_musd"]
-        .sum().reset_index()
-        .sort_values("disbursement_musd", ascending=False)
-        .groupby("sdg")["recipient_country"]
-        .apply(lambda x: x.head(3).tolist())
-        .to_dict()
-    )
-
-    # Top sectors per SDG
-    top_sectors = (
-        yr_df.groupby(["sdg", "sector"])["disbursement_musd"]
-        .sum().reset_index()
-        .sort_values("disbursement_musd", ascending=False)
-        .groupby("sdg")["sector"]
-        .apply(lambda x: x.head(3).tolist())
-        .to_dict()
-    )
-
-    records = []
-    for _, row in agg.iterrows():
-        sdg_num = int(row["sdg_label"])
-        records.append({
-            "sdg":                  sdg_num,
-            "sdg_name":             SDG_NAMES.get(sdg_num, ""),
-            "n_projects":           int(row["n_projects"]),
-            "commitment_musd":      round(float(row["commitment_musd"]), 3),
-            "disbursement_musd":    round(float(row["disbursement_musd"]), 3),
-            "net_disbursement_musd":round(float(row["net_disbursement_musd"]), 3),
-            "top_recipients":       top_recipients.get(sdg_num, []),
-            "top_sectors":          top_sectors.get(sdg_num, []),
-        })
-
-    out_path = OUT_DIR / f"oda_{yr}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
-    total_disb = sum(r["disbursement_musd"] for r in records)
-    print(f"  {yr}: {len(records)} SDGs, ${total_disb:.1f}M disbursement → {out_path.name}")
-
-# ── Wide annual summary CSV ───────────────────────────────────────────────────
-
-print("\nBuilding annual SDG summary table ...")
-annual = (
+sdg_annual = (
     df_sdg.groupby(["year", "sdg"])
-    .agg(disbursement_musd=("disbursement_musd", "sum"),
-         commitment_musd=("commitment_musd", "sum"),
-         n_projects=("project_id", "count"))
+    .agg(
+        disbursement_musd     = ("disbursement_musd",     "sum"),
+        commitment_musd       = ("commitment_musd",       "sum"),
+        net_disbursement_musd = ("net_disbursement_musd", "sum"),
+        n_projects            = ("project_id",            "count"),
+    )
     .reset_index()
 )
-annual["sdg"] = annual["sdg"].astype(int)
-annual["year"] = annual["year"].astype(int)
-annual.to_csv(OUT_ANNUAL, index=False, encoding="utf-8-sig")
-print(f"Wrote annual summary: {OUT_ANNUAL.name}  ({len(annual)} year×SDG rows)")
+sdg_annual.to_csv(OUT_SDG_ANNUAL, index=False, encoding="utf-8-sig")
+print(f"Wrote oda_sdg_annual.csv: {len(sdg_annual):,} year×SDG rows  "
+      f"({sdg_annual['year'].nunique()} years × up to 17 SDGs)")
 
-print("\nDone.")
+# ── oda_country_sdg_annual.csv — year × country_iso3 × SDG  (Panel C input) ──
+
+print("\nBuilding oda_country_sdg_annual.csv ...")
+df_c = df_sdg[df_sdg["country_iso3"].notna()].copy()
+
+country_sdg = (
+    df_c.groupby(["year", "country_iso3", "sdg"])
+    .agg(
+        disbursement_musd     = ("disbursement_musd",     "sum"),
+        commitment_musd       = ("commitment_musd",       "sum"),
+        net_disbursement_musd = ("net_disbursement_musd", "sum"),
+        n_projects            = ("project_id",            "count"),
+        # Convenience: how many distinct fund types (grant vs loan mix indicator)
+        n_grant_projects      = ("fund_type",
+                                 lambda x: (x.str.contains("무상", na=False)).sum()),
+        n_loan_projects       = ("fund_type",
+                                 lambda x: (x.str.contains("유상", na=False)).sum()),
+    )
+    .reset_index()
+)
+
+# Share of total annual disbursement (useful for relative measure)
+year_totals = sdg_annual.groupby("year")["disbursement_musd"].sum().rename("year_total_musd")
+country_sdg = country_sdg.join(year_totals, on="year")
+country_sdg["oda_share_pct"] = (
+    country_sdg["disbursement_musd"] / country_sdg["year_total_musd"] * 100
+).round(4)
+country_sdg.drop(columns=["year_total_musd"], inplace=True)
+
+country_sdg.to_csv(OUT_COUNTRY_SDG, index=False, encoding="utf-8-sig")
+print(f"Wrote oda_country_sdg_annual.csv: {len(country_sdg):,} rows  "
+      f"({country_sdg['country_iso3'].nunique()} countries, "
+      f"{country_sdg['year'].nunique()} years)")
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+total_disb = sdg_annual["disbursement_musd"].sum()
+print(f"\n{'='*60}")
+print(f"Total disbursement (SDG-tagged): ${total_disb:,.1f}M USD")
+print(f"Year range: {sdg_annual['year'].min()}–{sdg_annual['year'].max()}")
+print(f"\nOutputs written to: {OUT_DIR.relative_to(BASE_DIR)}/")
+print(f"  oda_clean.csv               ({len(df_clean):,} rows)")
+print(f"  oda_sdg_annual.csv          ({len(sdg_annual):,} rows)")
+print(f"  oda_country_sdg_annual.csv  ({len(country_sdg):,} rows)")
+print("Done.")

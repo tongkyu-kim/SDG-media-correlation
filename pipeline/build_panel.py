@@ -50,7 +50,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import io
@@ -67,11 +66,11 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-BASE_DIR   = Path(__file__).parent.parent
-MEDIA_DIR  = BASE_DIR / "src" / "media"
-ODA_DIR    = BASE_DIR / "src" / "oda" / "processed"
-ODA_ANNUAL = BASE_DIR / "src" / "oda" / "oda_sdg_annual.csv"
-PANEL_DIR  = BASE_DIR / "src" / "panel"
+BASE_DIR        = Path(__file__).parent.parent
+MEDIA_DIR       = BASE_DIR / "src" / "processed" / "media"
+ODA_ANNUAL      = BASE_DIR / "src" / "processed" / "oda" / "oda_sdg_annual.csv"
+ODA_COUNTRY_SDG = BASE_DIR / "src" / "processed" / "oda" / "oda_country_sdg_annual.csv"
+PANEL_DIR       = BASE_DIR / "src" / "processed" / "panel"
 PANEL_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -95,10 +94,8 @@ def load_media(years: list[int] | None = None) -> pd.DataFrame:
 
 def load_oda_monthly(years: list[int] | None = None) -> pd.DataFrame:
     """
-    Load annual ODA data from oda_sdg_annual.csv and expand to monthly
+    Load annual ODA from oda_sdg_annual.csv and expand to monthly
     by distributing each annual value evenly across 12 months.
-
-    Also loads country-level ODA from per-year JSON files.
     """
     if not ODA_ANNUAL.exists():
         logger.warning("ODA annual file not found — run preprocess_oda.py first")
@@ -133,61 +130,39 @@ def load_oda_monthly(years: list[int] | None = None) -> pd.DataFrame:
 
 def load_oda_country_monthly(years: list[int] | None = None) -> pd.DataFrame:
     """
-    Load country×SDG×year ODA from per-year JSON files, expand to monthly.
+    Load country×SDG×year ODA from oda_country_sdg_annual.csv and expand to monthly
+    by distributing annual values evenly across 12 months.
     """
-    rows = []
-    yr_dirs = sorted(ODA_DIR.glob("oda_*.json"))
-    for path in yr_dirs:
-        yr = int(path.stem.split("_")[1])
-        if years and yr not in years:
-            continue
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        # Each record has sdg + top_recipients; we need country-level data from clean CSV
-        # Country-level ODA is in oda_clean.csv if available
-    # Note: country-level ODA requires oda_clean.csv (not committed, lives locally)
-    # Return empty if not available; the SDG-level ODA is the fallback
-    clean_path = BASE_DIR / "src" / "oda" / "oda_clean.csv"
-    if not clean_path.exists():
-        logger.info("oda_clean.csv not found; country-level ODA unavailable")
+    if not ODA_COUNTRY_SDG.exists():
+        logger.warning("oda_country_sdg_annual.csv not found — run preprocess_oda.py first")
         return pd.DataFrame()
 
-    logger.info("Loading country-level ODA from oda_clean.csv ...")
-    oda = pd.read_csv(clean_path, encoding="utf-8-sig",
-                      usecols=["year", "recipient_country", "sdg",
-                               "disbursement_musd", "commitment_musd"])
+    logger.info("Loading country-level ODA from oda_country_sdg_annual.csv ...")
+    agg = pd.read_csv(ODA_COUNTRY_SDG, encoding="utf-8-sig",
+                      usecols=["year", "country_iso3", "sdg",
+                               "disbursement_musd", "commitment_musd",
+                               "net_disbursement_musd", "n_projects", "oda_share_pct"])
     if years:
-        oda = oda[oda["year"].isin(years)]
+        agg = agg[agg["year"].isin(years)]
 
-    # Map Korean recipient country names to ISO3
-    from reference.countries_ko import ko_to_iso3
-    oda["country_iso3"] = oda["recipient_country"].apply(ko_to_iso3)
-    oda = oda[oda["country_iso3"].notna() & (oda["sdg"].notna())]
-    oda["sdg"] = oda["sdg"].astype(int)
-
-    agg = (
-        oda.groupby(["year", "country_iso3", "sdg"])
-        .agg(
-            oda_disbursement_musd = ("disbursement_musd", "sum"),
-            oda_commitment_musd   = ("commitment_musd",   "sum"),
-            oda_n_projects        = ("disbursement_musd", "count"),
-        )
-        .reset_index()
-    )
+    agg["sdg"]  = agg["sdg"].astype(int)
+    agg["year"] = agg["year"].astype(int)
 
     # Expand to monthly
     monthly_rows = []
     for _, row in agg.iterrows():
         for month in range(1, 13):
             monthly_rows.append({
-                "year":                   int(row["year"]),
-                "month":                  month,
-                "country_iso3":           row["country_iso3"],
-                "sdg":                    int(row["sdg"]),
-                "oda_disbursement_musd":  round(float(row["oda_disbursement_musd"]) / 12, 5),
-                "oda_commitment_musd":    round(float(row["oda_commitment_musd"]) / 12, 5),
-                "oda_n_projects":         round(float(row["oda_n_projects"]) / 12, 3),
-                "oda_annual_disbursement":float(row["oda_disbursement_musd"]),
+                "year":                       int(row["year"]),
+                "month":                      month,
+                "country_iso3":               row["country_iso3"],
+                "sdg":                        int(row["sdg"]),
+                "oda_disbursement_musd":      round(float(row["disbursement_musd"])     / 12, 5),
+                "oda_commitment_musd":        round(float(row["commitment_musd"])       / 12, 5),
+                "oda_net_disbursement_musd":  round(float(row["net_disbursement_musd"]) / 12, 5),
+                "oda_n_projects":             round(float(row["n_projects"])            / 12, 3),
+                "oda_annual_disbursement":    float(row["disbursement_musd"]),
+                "oda_share_pct":              float(row["oda_share_pct"]),
             })
     return pd.DataFrame(monthly_rows)
 
@@ -355,7 +330,7 @@ def main(years: tuple, option: str) -> None:
         df_c.to_csv(out, index=False, encoding="utf-8-sig")
         click.echo(f"Option C: {len(df_c):,} rows → {out.relative_to(BASE_DIR)}")
 
-    click.echo("\nDone. Panel files written to src/panel/")
+    click.echo("\nDone. Panel files written to src/processed/panel/")
 
 
 if __name__ == "__main__":

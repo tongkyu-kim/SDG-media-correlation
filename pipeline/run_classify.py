@@ -1,26 +1,45 @@
 """
-Batch SDG classification + sentiment analysis on BigKinds CSV files.
+Hybrid SDG classification pipeline for BigKinds Korean news CSVs.
 
-Input:  src/news/YYYY/MM/YYYY-MM-DD.csv  (from BigKinds download)
-Output: src/news/YYYY/MM/YYYY-MM-DD_classified.csv
-        (same file + 5 added columns)
+Strategy
+--------
+1. Keyword classifier (no GPU) runs on ALL articles — identifies SDG candidates
+   and extracts extended variables (aid_stance, issue_intensity, issue_frame,
+   problem_solution, crisis_type, policy_actor).
 
-Added columns:
-  sdg_label        int   Primary SDG (1-17), 0 = not SDG-relevant
-  sdg_score        float Confidence of SDG assignment (0-1)
-  sdg_intensity    int   0=not relevant, 1=indirect, 2=moderate, 3=core
-  sdg_favorability str   positive | neutral | negative
-  sentiment_score  float Confidence of sentiment prediction
+2. BERT classifier (GPU) runs only on SDG candidates + policy-actor articles
+   (~5-15% of corpus) — provides higher-accuracy SDG labels, confidence scores,
+   secondary SDG, and sentiment.
 
-Classification input: title + " " + keywords  (fast & avoids 20k-token bodies)
+3. Results are merged: BERT output takes priority over keyword output for the
+   variables it covers; keyword output fills remaining columns.
 
-Usage:
-  python run_classify.py                          # all unclassified CSVs
-  python run_classify.py --year 2019              # one year
-  python run_classify.py --file src/news/2019/01/2019-01-07.csv
-  python run_classify.py --batch-size 64          # tune for your GPU/RAM
-  python run_classify.py --sdg-only               # skip sentiment
-  python run_classify.py --force                  # re-classify already-done files
+Output: <filename>_classified.csv  (original columns + 12 added columns)
+
+Added columns
+-------------
+  sdg_label          int   Primary SDG 1-17 (0 = not SDG-relevant)
+  sdg_secondary      int   Secondary SDG 1-17 (0 = none)
+  sdg_score          float Confidence 0.0-1.0 (BERT) or keyword density proxy
+  sdg_intensity      int   0-3 relevance level (BERT) or keyword proxy
+  sdg_favorability   str   positive | neutral | negative  (backward-compat)
+  sentiment_score    float Confidence of sentiment prediction (0.5 if keyword-only)
+  issue_intensity    int   0-5 severity/urgency scale (keyword-based)
+  aid_stance         str   supportive | neutral | opposed  (keyword-based)
+  issue_frame        str   dominant frame (keyword-based)
+  problem_solution   str   problem | solution | mixed | neutral (keyword-based)
+  crisis_type        str   comma-separated crisis types (keyword-based)
+  policy_actor       int   1 if Korean ODA actor mentioned (keyword-based)
+
+Usage
+-----
+  python run_classify.py                       # all unclassified CSVs, GPU if available
+  python run_classify.py --year 2019           # one year only
+  python run_classify.py --file path/to.csv    # single file
+  python run_classify.py --batch-size 128      # larger batch for more GPU memory
+  python run_classify.py --sdg-only            # skip sentiment analysis
+  python run_classify.py --force               # re-classify already-done files
+  python run_classify.py --keyword-only        # skip BERT entirely (keyword fallback only)
 """
 
 from __future__ import annotations
@@ -39,25 +58,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-NEWS_DIR = Path(__file__).parent.parent / "src" / "news"
+NEWS_DIR      = Path(__file__).parent.parent / "src" / "news"
+PROCESSED_DIR = Path(__file__).parent.parent / "src" / "processed" / "news"
 
-# Output column names
-COL_SDG_LABEL   = "sdg_label"
-COL_SDG_SCORE   = "sdg_score"
-COL_SDG_INT     = "sdg_intensity"
-COL_FAVOR       = "sdg_favorability"
-COL_SENT_SCORE  = "sentiment_score"
-ADDED_COLS      = [COL_SDG_LABEL, COL_SDG_SCORE, COL_SDG_INT, COL_FAVOR, COL_SENT_SCORE]
+sys.path.insert(0, str(Path(__file__).parent))
+from classify.keyword_classifier import KeywordClassifier
 
-# Column names that hold the article text in BigKinds CSVs
-TEXT_COLS_PRIMARY   = ["title", "keywords"]          # fast path (recommended)
-TEXT_COLS_FALLBACK  = ["제목", "키워드"]             # if rename didn't happen
+# ── Output column names ────────────────────────────────────────────────────────
+
+BERT_COLS    = ["sdg_label", "sdg_secondary", "sdg_score", "sdg_intensity",
+                "sdg_favorability", "sentiment_score"]
+KEYWORD_COLS = ["issue_intensity", "aid_stance", "issue_frame",
+                "problem_solution", "crisis_type", "policy_actor"]
+ALL_ADDED    = BERT_COLS + KEYWORD_COLS
+
+# Text columns used as BERT input
+_TEXT_COLS_EN = ["title", "keywords"]
+_TEXT_COLS_KO = ["제목", "키워드"]
 
 
 def _build_input_text(row: pd.Series) -> str:
-    """Combine title + keywords into a single classification input."""
+    """title + keywords — compact, matches BERT training context."""
     parts = []
-    for col in TEXT_COLS_PRIMARY + TEXT_COLS_FALLBACK:
+    for col in _TEXT_COLS_EN + _TEXT_COLS_KO:
         val = row.get(col)
         if pd.notna(val) and str(val).strip():
             parts.append(str(val).strip())
@@ -66,52 +89,117 @@ def _build_input_text(row: pd.Series) -> str:
     return " ".join(parts)
 
 
+def _secondary_from_scores(sdg_result) -> int:
+    """Extract second-highest SDG from BERT all_scores dict."""
+    if not sdg_result.all_scores:
+        return 0
+    primary = sdg_result.sdg_label
+    sorted_sdgs = sorted(sdg_result.all_scores.items(), key=lambda x: x[1], reverse=True)
+    for sdg, score in sorted_sdgs:
+        if sdg != primary and score >= 0.20:
+            return sdg
+    return 0
+
+
+# ── Per-file classification ────────────────────────────────────────────────────
+
 def classify_file(
     csv_path: Path,
-    sdg_clf,
-    sent_clf,
+    kw_clf: KeywordClassifier,
+    sdg_clf,        # SDGClassifier or None
+    sent_clf,       # SentimentAnalyzer or None
     batch_size: int,
     sdg_only: bool,
+    bert_min_hits: int = 2,
 ) -> Path:
     """Classify one CSV and write *_classified.csv. Returns output path."""
-    out_path = csv_path.with_name(csv_path.stem + "_classified.csv")
+    # Output mirrors raw directory structure under src/processed/news/
+    out_path = PROCESSED_DIR / csv_path.parent.name / (csv_path.stem + "_classified.csv")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig")
+    df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig", low_memory=False)
     if df.empty:
         logger.warning("Empty file, skipping: %s", csv_path.name)
         return out_path
 
-    # Build classification inputs
-    texts = [_build_input_text(row) for _, row in df.iterrows()]
+    # ── Step 1: keyword classify ALL articles (fast, vectorized) ──────────────
+    kw = kw_clf.classify_dataframe(df)
 
-    # SDG classification
-    logger.info("  SDG classification: %d articles ...", len(texts))
-    sdg_results = sdg_clf.classify_batch(texts, batch_size=batch_size)
-    df[COL_SDG_LABEL] = [r.sdg_label    for r in sdg_results]
-    df[COL_SDG_SCORE] = [r.sdg_score    for r in sdg_results]
-    df[COL_SDG_INT]   = [r.sdg_intensity for r in sdg_results]
+    # Initialize output with keyword defaults
+    df["sdg_label"]       = kw["kw_sdg_label"]
+    df["sdg_secondary"]   = kw["kw_sdg_secondary"]
+    df["sdg_score"]       = kw["kw_sdg_score"]
+    df["sdg_intensity"]   = kw["kw_sdg_intensity"]
+    df["sdg_favorability"]= kw["kw_sdg_favorability"]
+    df["sentiment_score"] = 0.5
+    df["issue_intensity"] = kw["issue_intensity"]
+    df["aid_stance"]      = kw["aid_stance"]
+    df["issue_frame"]     = kw["issue_frame"]
+    df["problem_solution"]= kw["problem_solution"]
+    df["crisis_type"]     = kw["crisis_type"]
+    df["policy_actor"]    = kw["policy_actor"]
 
-    # Sentiment — run only on SDG-relevant articles to save time
-    if sdg_only:
-        df[COL_FAVOR]      = ""
-        df[COL_SENT_SCORE] = None
-    else:
-        relevant_mask = df[COL_SDG_LABEL] > 0
-        df[COL_FAVOR]      = "neutral"
-        df[COL_SENT_SCORE] = 0.0
+    # ── Step 2: BERT on development-relevant candidates only ─────────────────
+    if sdg_clf is not None:
+        # Build long text for country detection (title + keywords + body[:300])
+        text_long = kw_clf._text_long(df, kw_clf._text_short(df))
+        from reference.countries_ko import detect_oda_recipient_countries
+        has_country = text_long.apply(lambda t: bool(detect_oda_recipient_countries(t)))
 
-        if relevant_mask.any():
-            relevant_texts = [texts[i] for i in df.index[relevant_mask]]
-            logger.info("  Sentiment analysis: %d relevant articles ...", len(relevant_texts))
-            sent_results = sent_clf.analyze_batch(relevant_texts, batch_size=batch_size)
-            df.loc[relevant_mask, COL_FAVOR]      = [r.label for r in sent_results]
-            df.loc[relevant_mask, COL_SENT_SCORE] = [r.score for r in sent_results]
+        # Candidate criteria (two tiers):
+        #   1. policy_actor: explicit KOICA/EDCF/ODA mention → always include
+        #   2. SDG keyword hits ≥ threshold AND mentions a country → development context
+        # Domestic Korean articles (health, education) score high on E5 similarity
+        # but rarely name developing countries; this filter removes them efficiently.
+        bert_mask = (
+            (kw["policy_actor"] == 1) |
+            ((kw["kw_sdg_hits"] >= bert_min_hits) & has_country)
+        )
+        n_candidates = bert_mask.sum()
 
+        if n_candidates > 0:
+            logger.info("  BERT: %d/%d candidate articles ...", n_candidates, len(df))
+
+            cand_df    = df[bert_mask]
+            cand_texts = [_build_input_text(row) for _, row in cand_df.iterrows()]
+            cand_idx   = cand_df.index
+
+            # SDG classification
+            sdg_results = sdg_clf.classify_batch(cand_texts, batch_size=batch_size)
+
+            bert_sdg_labels     = [r.sdg_label     for r in sdg_results]
+            bert_sdg_scores     = [r.sdg_score      for r in sdg_results]
+            bert_sdg_intensities= [r.sdg_intensity  for r in sdg_results]
+            bert_sdg_secondary  = [_secondary_from_scores(r) for r in sdg_results]
+
+            df.loc[cand_idx, "sdg_label"]     = bert_sdg_labels
+            df.loc[cand_idx, "sdg_secondary"] = bert_sdg_secondary
+            df.loc[cand_idx, "sdg_score"]     = bert_sdg_scores
+            df.loc[cand_idx, "sdg_intensity"] = bert_sdg_intensities
+
+            # Sentiment — only on BERT-confirmed SDG-relevant articles
+            if not sdg_only and sent_clf is not None:
+                sdg_relevant_mask = pd.Series(
+                    [r.sdg_label > 0 for r in sdg_results], index=cand_idx
+                )
+                rel_indices = cand_idx[sdg_relevant_mask]
+                rel_texts   = [cand_texts[i] for i, flag in enumerate(sdg_relevant_mask) if flag]
+
+                if len(rel_texts) > 0:
+                    logger.info("  Sentiment: %d SDG-relevant articles ...", len(rel_texts))
+                    sent_results = sent_clf.analyze_batch(rel_texts, batch_size=batch_size)
+                    df.loc[rel_indices, "sdg_favorability"] = [r.label for r in sent_results]
+                    df.loc[rel_indices, "sentiment_score"]  = [r.score for r in sent_results]
+
+    # ── Write output ───────────────────────────────────────────────────────────
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    n_sdg = (df[COL_SDG_LABEL] > 0).sum()
+
+    n_sdg = (df["sdg_label"].astype(str) != "0").sum()
     logger.info("  Wrote %s  (%d/%d SDG-relevant)", out_path.name, n_sdg, len(df))
     return out_path
 
+
+# ── File discovery ─────────────────────────────────────────────────────────────
 
 def find_csv_files(year: str | None = None) -> list[Path]:
     pattern = f"{year}/**/*.csv" if year else "**/*.csv"
@@ -121,50 +209,83 @@ def find_csv_files(year: str | None = None) -> list[Path]:
     )
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── CLI ────────────────────────────────────────────────────────────────────────
 
 @click.command()
 @click.option("--file", "single_file", default="", metavar="PATH",
               help="Classify a single CSV file")
 @click.option("--year", default="", help="Restrict to one year (e.g. 2019)")
-@click.option("--batch-size", default=32, show_default=True, type=int,
-              help="Articles per inference batch (raise for GPU, lower for CPU)")
+@click.option("--batch-size", default=128, show_default=True, type=int,
+              help="Articles per E5 inference batch (128 optimal for RTX 3080)")
 @click.option("--sdg-only", is_flag=True,
               help="Skip sentiment analysis (faster)")
+@click.option("--bert-min-hits", default=2, show_default=True, type=int,
+              help="Min keyword hits required to send an article to BERT (policy-actor articles always included)")
+@click.option("--keyword-only", is_flag=True,
+              help="Skip BERT entirely — keyword classification only (no GPU needed)")
 @click.option("--force", is_flag=True,
               help="Re-classify files that already have a _classified.csv")
-def main(single_file: str, year: str, batch_size: int, sdg_only: bool, force: bool) -> None:
-    from classify.sdg_classifier import SDGClassifier
-    from classify.sentiment_analyzer import SentimentAnalyzer
-
-    # Collect files
+def main(
+    single_file: str,
+    year: str,
+    batch_size: int,
+    sdg_only: bool,
+    bert_min_hits: int,
+    keyword_only: bool,
+    force: bool,
+) -> None:
+    # ── Collect files ──────────────────────────────────────────────────────────
     if single_file:
         files = [Path(single_file)]
     else:
         files = find_csv_files(year or None)
 
     if not force:
-        files = [f for f in files if not f.with_name(f.stem + "_classified.csv").exists()]
+        files = [
+            f for f in files
+            if not (PROCESSED_DIR / f.parent.name / (f.stem + "_classified.csv")).exists()
+        ]
 
     if not files:
-        click.echo("Nothing to classify.")
+        click.echo("Nothing to classify (use --force to re-run existing).")
         return
 
-    click.echo(f"Classifying {len(files)} files (batch_size={batch_size}, sdg_only={sdg_only})")
+    click.echo(f"Files to process: {len(files)}")
 
-    # Load models once
-    sdg_clf  = SDGClassifier()
-    sent_clf = None if sdg_only else SentimentAnalyzer()
+    # ── Load models ────────────────────────────────────────────────────────────
+    kw_clf = KeywordClassifier()
+    click.echo("Keyword classifier ready.")
 
+    sdg_clf  = None
+    sent_clf = None
+
+    if not keyword_only:
+        try:
+            from classify.sdg_classifier import SDGClassifier
+            from classify.sentiment_analyzer import SentimentAnalyzer
+            sdg_clf = SDGClassifier()
+            if not sdg_only:
+                sent_clf = SentimentAnalyzer()
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            click.echo(f"BERT models loaded — device: {device}  batch_size: {batch_size}")
+        except ImportError as e:
+            click.echo(f"Warning: BERT unavailable ({e}). Running keyword-only.")
+
+    # ── Process ────────────────────────────────────────────────────────────────
     errors = []
     for csv_path in tqdm(files, unit="file", desc="Classifying"):
         try:
-            classify_file(csv_path, sdg_clf, sent_clf, batch_size, sdg_only)
+            classify_file(
+                csv_path, kw_clf, sdg_clf, sent_clf,
+                batch_size=batch_size, sdg_only=sdg_only,
+                bert_min_hits=bert_min_hits,
+            )
         except Exception as exc:
-            logger.error("Failed %s: %s", csv_path.name, exc)
+            logger.error("Failed %s: %s", csv_path.name, exc, exc_info=True)
             errors.append((csv_path, exc))
 
-    click.echo(f"\nDone. {len(files) - len(errors)} succeeded, {len(errors)} failed.")
+    click.echo(f"\nDone.  {len(files) - len(errors)} succeeded,  {len(errors)} failed.")
     if errors:
         for p, e in errors:
             click.echo(f"  {p.name}: {e}")
