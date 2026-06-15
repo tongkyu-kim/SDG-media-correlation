@@ -1,109 +1,117 @@
-# SDG Media Dashboard
+# Korean Media Coverage and SDG Aid Allocation: A Correlation Study
 
-## Overview
+This repository supports research into whether Korean news media attention to Sustainable Development Goal (SDG) topics predicts or correlates with subsequent shifts in Korea's Official Development Assistance (ODA) funding patterns. The hypothesis is that media salience — measured as article volume by SDG theme — may function as an agenda-setting signal that influences aid allocation decisions across short, medium, and long time horizons.
 
-The SDG Media Dashboard is an interactive web application that analyzes the correlation between Korean media coverage and Sustainable Development Goals (SDG) funding allocation patterns. This tool provides monthly analysis of how media attention influences development funding across different timeframes.
+## Research Questions
 
-## Features
+1. Does increased Korean media coverage of a given SDG precede a measurable increase in ODA disbursements aligned to that SDG?
+2. How do lag structures (1–6 months, 6–24 months, 2–5 years) affect the strength of the media–funding correlation?
+3. Are certain SDG clusters more responsive to media salience than others?
 
-### 📊 Interactive Heatmaps
-- **Immediate Response (1-6 months)**: Shows short-term funding allocation patterns following media coverage
-- **Medium Term (6 months - 2 years)**: Tracks medium-term funding responses
-- **Long Term (2-5 years)**: Analyzes long-term funding allocation trends
+## Data
 
-### 📈 Advanced Analytics
-- **17x17 SDG Correlation Matrix**: Visual representation of cross-SDG funding relationships
-- **Monthly Data Granularity**: Precise tracking of funding allocation patterns
-- **Seasonal Pattern Recognition**: Identifies seasonal trends in media coverage and funding
-- **Impact Scoring**: Measures the intensity and type of media coverage
+**Korean ODA** — KOICA/MOFA project-level disbursement records (`src/oda/`), sourced from Korea's ODA statistical system. Each row is a project with recipient country, sector, SDG classification, and funding amount.
 
-### 🎯 Key Visualizations
-- SDG funding distribution pie charts with official UN colors
-- Timeline analysis of ODA projects
-- Regional distribution mapping
-- Media sentiment analysis
-- Correlation scatter plots
+**Korean news media** — Weekly article batches from [BigKinds](https://www.bigkinds.or.kr), Korea's national news database (`src/news/<year>/`). Files cover 2010 onward and are organized by weekly intervals. Each batch contains article metadata including publication date, outlet, keywords, and category.
 
-## Data Sources
+## Repository Structure
 
-### Required Input Files
-1. **ODA Dataset (CSV)**: Korean Official Development Assistance data
-   - Location: \`src/oda/oda_korea_dataset.csv\`
-   - Format: CSV with project details, funding amounts, SDG classifications
+```
+SDG-media-correlation/
+│
+├── src/
+│   ├── oda/                        # Raw ODA data (Excel)
+│   └── news/                       # BigKinds weekly news exports
+│       ├── 2010/
+│       ├── 2016/
+│       ├── 2017/
+│       ├── 2018/
+│       ├── 2019/
+│       └── ...
+│
+├── pipeline/                       # Python data pipeline
+│   ├── config.py                   # Paths, credentials, settings
+│   ├── bigkinds/                   # BigKinds API/scraper clients
+│   │   ├── api_client.py
+│   │   ├── api_client_official.py
+│   │   ├── web_client.py
+│   │   └── media_codes.py
+│   ├── collect_daily.py            # Daily news collection
+│   ├── backfill.py                 # Historical backfill
+│   ├── scheduler.py                # Collection scheduler
+│   ├── preprocess_oda.py           # ODA cleaning and SDG mapping
+│   ├── aggregate_media.py          # Article counts by SDG/month
+│   ├── run_classify.py             # SDG classification of articles
+│   ├── build_panel.py              # Merge media + ODA into panel dataset
+│   ├── panel_prelim.py             # Preliminary panel regressions
+│   └── processor.py                # Shared processing utilities
+│
+├── docs/
+│   └── METHODOLOGY.md              # SDG classification scheme, lag structure rationale
+│
+├── examples/
+│   └── README.md                   # Sample data format notes
+│
+└── index.html                      # ODA exploratory dashboard (prototype)
+```
 
-2. **News Dataset (XLSX)**: Korean media coverage data
-   - Location: \`src/raw/2012.xlsx\`
-   - Format: Excel with article dates, titles, categories, keywords
+## Pipeline
 
-## Project Structure
+Data flows through four stages:
 
-\`\`\`
-SDG-media-dashboard/
-├── index.html                 # Main dashboard application
-├── README.md                  # This file
-├── src/                       # Data sources
-│   ├── oda/                   # ODA dataset files
-│   ├── processed/             # Processed data files
-│   └── raw/                   # Raw data files
-├── assets/                    # Static assets
-│   ├── css/                   # Stylesheets
-│   ├── js/                    # JavaScript modules
-│   └── images/                # Images and icons
-├── docs/                      # Documentation
-└── examples/                  # Example data and configurations
-\`\`\`
+1. **Collection** — `collect_daily.py` / `backfill.py` pull article metadata from BigKinds for a given date range and write weekly Excel files into `src/news/<year>/`.
 
-## Quick Start
+2. **Classification** — `run_classify.py` maps each article to one or more SDGs using keyword matching against the UN SDG keyword taxonomy. Results feed into the aggregation step.
 
-### 1. Clone the Repository
-\`\`\`bash
-git clone https://github.com/[username]/SDG-media-dashboard.git
-cd SDG-media-dashboard
-\`\`\`
+3. **Aggregation** — `aggregate_media.py` collapses article counts to monthly SDG-level totals. `preprocess_oda.py` does the same for ODA disbursements.
 
-### 2. Prepare Data Files
-- Place your ODA dataset in \`src/oda/oda_korea_dataset.csv\`
-- Place your news dataset in \`src/raw/2012.xlsx\`
+4. **Panel construction** — `build_panel.py` merges the two monthly time series into a balanced panel dataset suitable for fixed-effects or distributed-lag regression.
 
-### 3. Open the Dashboard
-- Open \`index.html\` in a modern web browser
-- Click "Load Local Data Files" to use sample data
-- Or upload your own data files using the upload interface
+## Setup
 
-## Technical Specifications
+Requires Python 3.10+. Install dependencies and configure credentials before running:
 
-### Dependencies
-- **Plotly.js v2.26.0**: Interactive charting library
-- **Chart.js**: Additional chart components
-- **XLSX.js v0.18.5**: Excel file parsing
-- **PapaParse v5.4.1**: CSV file parsing
-- **Font Awesome 6.4.0**: Icons
-- **Inter Font**: Typography
+```bash
+cd pipeline
+python -m venv .venv
+.venv\Scripts\activate       # Windows
+pip install -r requirements.txt
 
-### Browser Compatibility
-- Chrome 80+
-- Firefox 75+
-- Safari 13+
-- Edge 80+
+# Copy and fill in credentials
+cp .env.example .env
+```
 
-## Contributing
+`.env` variables:
 
-1. Fork the repository
-2. Create a feature branch (\`git checkout -b feature/amazing-feature\`)
-3. Commit your changes (\`git commit -m 'Add amazing feature'\`)
-4. Push to the branch (\`git push origin feature/amazing-feature\`)
-5. Open a Pull Request
+| Variable | Description |
+|---|---|
+| `BIGKINDS_EMAIL` | BigKinds account email |
+| `BIGKINDS_PASSWORD` | BigKinds account password |
+| `NEWS_DATA_DIR` | Override default output path (optional) |
+| `COLLECT_START_DATE` | Earliest date for backfill (default: 2010-01-01) |
 
-## License
+Run a backfill for a specific year:
 
-This project is licensed under the MIT License.
+```bash
+python backfill.py --start 2015-01-01 --end 2015-12-31
+```
 
-## Contact
+Build the analysis panel:
 
-For questions, suggestions, or collaboration opportunities, please open an issue on GitHub.
+```bash
+python preprocess_oda.py
+python aggregate_media.py
+python build_panel.py
+```
 
----
+## Exploratory Dashboard
 
-**Version**: 1.0.0  
-**Last Updated**: September 2025  
-**Compatibility**: Modern web browsers with ES6 support
+`index.html` is a browser-based prototype for exploring the ODA dataset before formal analysis. Open it directly in a modern browser — no server required.
+
+## Methodology Notes
+
+See [docs/METHODOLOGY.md](docs/METHODOLOGY.md) for the SDG classification scheme, thematic groupings, lag-structure rationale, and known limitations (Korean-language media only, single primary SDG per article, fixed lag windows).
+
+## Status
+
+Active data collection and classification. Panel regression analysis in progress.
