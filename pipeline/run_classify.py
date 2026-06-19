@@ -58,11 +58,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-NEWS_DIR      = Path(__file__).parent.parent / "src" / "news"
-PROCESSED_DIR = Path(__file__).parent.parent / "src" / "processed" / "news"
-
 sys.path.insert(0, str(Path(__file__).parent))
+import config as _cfg
 from classify.keyword_classifier import KeywordClassifier
+
+# Raw/clean news source; ODA-filtered output lands in PROCESSED_DIR
+NEWS_DIR      = _cfg.NEWS_CLEAN_DIR if _cfg.NEWS_CLEAN_DIR.exists() else _cfg.NEWS_DATA_DIR
+PROCESSED_DIR = Path(__file__).parent.parent / "src" / "processed" / "news"
+ODA_DIR       = PROCESSED_DIR   # train_oda_classifier.py writes *_oda.csv here
 
 # ── Output column names ────────────────────────────────────────────────────────
 
@@ -111,16 +114,25 @@ def classify_file(
     batch_size: int,
     sdg_only: bool,
     bert_min_hits: int = 2,
+    oda_filtered: bool = False,
 ) -> Path:
     """Classify one CSV and write *_classified.csv. Returns output path."""
-    # Output mirrors raw directory structure under src/processed/news/
-    out_path = PROCESSED_DIR / csv_path.parent.name / (csv_path.stem + "_classified.csv")
+    out_path = PROCESSED_DIR / (csv_path.stem + "_classified.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig", low_memory=False)
     if df.empty:
         logger.warning("Empty file, skipping: %s", csv_path.name)
         return out_path
+
+    # When using ODA-filtered files, restrict BERT to ODA-relevant articles only
+    if oda_filtered and "oda_relevant" in df.columns:
+        n_before = len(df)
+        df = df[df["oda_relevant"].astype(str) == "1"].copy()
+        logger.info("  ODA filter: %d/%d articles kept", len(df), n_before)
+        if df.empty:
+            df.to_csv(out_path, index=False, encoding="utf-8-sig")
+            return out_path
 
     # ── Step 1: keyword classify ALL articles (fast, vectorized) ──────────────
     kw = kw_clf.classify_dataframe(df)
@@ -201,11 +213,19 @@ def classify_file(
 
 # ── File discovery ─────────────────────────────────────────────────────────────
 
-def find_csv_files(year: str | None = None) -> list[Path]:
-    pattern = f"{year}/**/*.csv" if year else "**/*.csv"
+def find_csv_files(year: str | None = None, oda_filtered: bool = False) -> list[Path]:
+    if oda_filtered:
+        # Read *_oda.csv files produced by train_oda_classifier.py;
+        # only include rows where oda_relevant==1 during classify_file.
+        pattern = f"news_{year}_*_oda.csv" if year else "news_*_oda.csv"
+        return sorted(
+            p for p in ODA_DIR.glob(pattern)
+            if not p.stem.endswith("_classified")
+        )
+    pattern = f"news_{year}_*.csv" if year else "news_*.csv"
     return sorted(
         p for p in NEWS_DIR.glob(pattern)
-        if not p.stem.endswith("_classified")
+        if not any(s in p.stem for s in ["_classified", "_oda"])
     )
 
 
@@ -223,6 +243,8 @@ def find_csv_files(year: str | None = None) -> list[Path]:
               help="Min keyword hits required to send an article to BERT (policy-actor articles always included)")
 @click.option("--keyword-only", is_flag=True,
               help="Skip BERT entirely — keyword classification only (no GPU needed)")
+@click.option("--oda-filtered", is_flag=True,
+              help="Read *_oda.csv files from train_oda_classifier.py and skip oda_relevant==0 rows")
 @click.option("--force", is_flag=True,
               help="Re-classify files that already have a _classified.csv")
 def main(
@@ -232,13 +254,14 @@ def main(
     sdg_only: bool,
     bert_min_hits: int,
     keyword_only: bool,
+    oda_filtered: bool,
     force: bool,
 ) -> None:
     # ── Collect files ──────────────────────────────────────────────────────────
     if single_file:
         files = [Path(single_file)]
     else:
-        files = find_csv_files(year or None)
+        files = find_csv_files(year or None, oda_filtered=oda_filtered)
 
     if not force:
         files = [
@@ -279,7 +302,7 @@ def main(
             classify_file(
                 csv_path, kw_clf, sdg_clf, sent_clf,
                 batch_size=batch_size, sdg_only=sdg_only,
-                bert_min_hits=bert_min_hits,
+                bert_min_hits=bert_min_hits, oda_filtered=oda_filtered,
             )
         except Exception as exc:
             logger.error("Failed %s: %s", csv_path.name, exc, exc_info=True)

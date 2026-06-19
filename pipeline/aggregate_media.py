@@ -66,13 +66,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BASE_DIR      = Path(__file__).parent.parent
-NEWS_DIR      = BASE_DIR / "src" / "news"
 PROCESSED_DIR = BASE_DIR / "src" / "processed" / "news"
 OUT_DIR       = BASE_DIR / "src" / "processed" / "media"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
+import config as _cfg
 from classify.keywords_ko import SDG_KEYWORDS_KO, keyword_scores
+
+# Prefer cleaned/deduplicated news; fall back to raw news dir
+NEWS_DIR = _cfg.NEWS_CLEAN_DIR if _cfg.NEWS_CLEAN_DIR.exists() else _cfg.NEWS_DATA_DIR
 from reference.countries_ko import detect_countries, COUNTRY_MAP
 
 SDG_NAMES = {
@@ -355,19 +358,40 @@ def _parse_years(years_arg: tuple[str]) -> list[int]:
 def main(years: tuple, out: str) -> None:
     target_years = _parse_years(years) if years else None
 
-    all_dirs = sorted(d for d in NEWS_DIR.iterdir() if d.is_dir() and d.name.isdigit())
-    if target_years:
-        all_dirs = [d for d in all_dirs if int(d.name) in target_years]
+    # Support both structures:
+    #   (A) year subdirectories: NEWS_DIR/2016/news_2016_01.csv
+    #   (B) flat files:          NEWS_DIR/news_2016_01.csv
+    def _files_for_year(yr: int) -> list[Path]:
+        subdir = NEWS_DIR / str(yr)
+        if subdir.is_dir():
+            return sorted(f for f in subdir.glob("*.csv")
+                          if not any(s in f.stem for s in ["_classified", "_oda"]))
+        return sorted(f for f in NEWS_DIR.glob(f"news_{yr}_*.csv")
+                      if not any(s in f.stem for s in ["_classified", "_oda"]))
 
-    if not all_dirs:
-        click.echo("No year directories found.")
+    # Discover available years
+    available_years: set[int] = set()
+    for p in NEWS_DIR.iterdir():
+        if p.is_dir() and p.name.isdigit():
+            available_years.add(int(p.name))
+    for p in NEWS_DIR.glob("news_????_*.csv"):
+        try:
+            available_years.add(int(p.name[5:9]))
+        except ValueError:
+            pass
+
+    year_list = sorted(available_years)
+    if target_years:
+        year_list = [y for y in year_list if y in target_years]
+
+    if not year_list:
+        click.echo("No news files found.")
         return
 
     all_articles: list[pd.DataFrame] = []
 
-    for yr_dir in all_dirs:
-        yr = int(yr_dir.name)
-        files = sorted(f for f in yr_dir.glob("*.csv") if "_classified" not in f.name)
+    for yr in year_list:
+        files = _files_for_year(yr)
         logger.info("Year %d: %d files", yr, len(files))
 
         yr_articles: list[pd.DataFrame] = []
@@ -377,6 +401,7 @@ def main(years: tuple, out: str) -> None:
                 yr_articles.append(chunk)
 
         if not yr_articles:
+            logger.warning("  Year %d: no articles loaded", yr)
             continue
         yr_df = pd.concat(yr_articles, ignore_index=True)
         logger.info("  → %d articles", len(yr_df))
