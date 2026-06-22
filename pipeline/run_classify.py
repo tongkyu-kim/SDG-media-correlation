@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 import config as _cfg
 from classify.keyword_classifier import KeywordClassifier
+from classify.sdg_classifier import _sim_to_intensity
+from reference.countries_ko import detect_countries, detect_oda_recipient_countries
 
 # Raw/clean news source; ODA-filtered output lands in PROCESSED_DIR
 NEWS_DIR      = _cfg.NEWS_CLEAN_DIR if _cfg.NEWS_CLEAN_DIR.exists() else _cfg.NEWS_DATA_DIR
@@ -69,11 +71,12 @@ ODA_DIR       = PROCESSED_DIR   # train_oda_classifier.py writes *_oda.csv here
 
 # ── Output column names ────────────────────────────────────────────────────────
 
-BERT_COLS    = ["sdg_label", "sdg_secondary", "sdg_score", "sdg_intensity",
-                "sdg_favorability", "sentiment_score"]
+BERT_COLS    = ["sdg_label", "sdg_labels", "sdg_secondary", "sdg_score",
+                "sdg_intensity", "sdg_favorability", "sentiment_score",
+                "sentiment_continuous"]
 KEYWORD_COLS = ["issue_intensity", "aid_stance", "issue_frame",
                 "problem_solution", "crisis_type", "policy_actor"]
-ALL_ADDED    = BERT_COLS + KEYWORD_COLS
+ALL_ADDED    = BERT_COLS + KEYWORD_COLS + ["country_iso3"]
 
 # Text columns used as BERT input
 _TEXT_COLS_EN = ["title", "keywords"]
@@ -93,10 +96,10 @@ def _build_input_text(row: pd.Series) -> str:
 
 
 def _secondary_from_scores(sdg_result) -> int:
-    """Extract second-highest SDG from BERT all_scores dict."""
+    """Extract second-highest SDG from BERT all_scores dict (works for both result types)."""
     if not sdg_result.all_scores:
         return 0
-    primary = sdg_result.sdg_label
+    primary = getattr(sdg_result, "sdg_top", getattr(sdg_result, "sdg_label", 0))
     sorted_sdgs = sorted(sdg_result.all_scores.items(), key=lambda x: x[1], reverse=True)
     for sdg, score in sorted_sdgs:
         if sdg != primary and score >= 0.20:
@@ -138,25 +141,34 @@ def classify_file(
     kw = kw_clf.classify_dataframe(df)
 
     # Initialize output with keyword defaults
-    df["sdg_label"]       = kw["kw_sdg_label"]
-    df["sdg_secondary"]   = kw["kw_sdg_secondary"]
-    df["sdg_score"]       = kw["kw_sdg_score"]
-    df["sdg_intensity"]   = kw["kw_sdg_intensity"]
-    df["sdg_favorability"]= kw["kw_sdg_favorability"]
-    df["sentiment_score"] = 0.5
-    df["issue_intensity"] = kw["issue_intensity"]
-    df["aid_stance"]      = kw["aid_stance"]
-    df["issue_frame"]     = kw["issue_frame"]
-    df["problem_solution"]= kw["problem_solution"]
-    df["crisis_type"]     = kw["crisis_type"]
-    df["policy_actor"]    = kw["policy_actor"]
+    df["sdg_label"]             = kw["kw_sdg_label"]
+    df["sdg_labels"]            = kw["kw_sdg_label"].apply(  # multi-label placeholder
+        lambda x: str(x) if str(x) != "0" else ""
+    )
+    df["sdg_secondary"]         = kw["kw_sdg_secondary"]
+    df["sdg_score"]             = kw["kw_sdg_score"]
+    df["sdg_intensity"]         = kw["kw_sdg_intensity"]
+    df["sdg_favorability"]      = kw["kw_sdg_favorability"]
+    df["sentiment_score"]       = 0.5
+    df["sentiment_continuous"]  = 0.0
+    df["issue_intensity"]       = kw["issue_intensity"]
+    df["aid_stance"]            = kw["aid_stance"]
+    df["issue_frame"]           = kw["issue_frame"]
+    df["problem_solution"]      = kw["problem_solution"]
+    df["crisis_type"]           = kw["crisis_type"]
+    df["policy_actor"]          = kw["policy_actor"]
+
+    # ── Country detection — all articles, always ───────────────────────────────
+    # Stores pipe-joined ISO3 codes per article (e.g. "VNM|KHM|ETH" or "").
+    # Used by aggregate_media.py to build the country × SDG × year panel.
+    _text_long = kw_clf._text_long(df, kw_clf._text_short(df))
+    df["country_iso3"] = _text_long.apply(
+        lambda t: "|".join(detect_countries(t)) if t else ""
+    )
 
     # ── Step 2: BERT on development-relevant candidates only ─────────────────
     if sdg_clf is not None:
-        # Build long text for country detection (title + keywords + body[:300])
-        text_long = kw_clf._text_long(df, kw_clf._text_short(df))
-        from reference.countries_ko import detect_oda_recipient_countries
-        has_country = text_long.apply(lambda t: bool(detect_oda_recipient_countries(t)))
+        has_country = _text_long.apply(lambda t: bool(detect_oda_recipient_countries(t)))
 
         # Candidate criteria (two tiers):
         #   1. policy_actor: explicit KOICA/EDCF/ODA mention → always include
@@ -176,32 +188,33 @@ def classify_file(
             cand_texts = [_build_input_text(row) for _, row in cand_df.iterrows()]
             cand_idx   = cand_df.index
 
-            # SDG classification
-            sdg_results = sdg_clf.classify_batch(cand_texts, batch_size=batch_size)
+            # SDG classification (multi-label)
+            sdg_results = sdg_clf.classify_multilabel_batch(cand_texts, batch_size=batch_size)
 
-            bert_sdg_labels     = [r.sdg_label     for r in sdg_results]
-            bert_sdg_scores     = [r.sdg_score      for r in sdg_results]
-            bert_sdg_intensities= [r.sdg_intensity  for r in sdg_results]
-            bert_sdg_secondary  = [_secondary_from_scores(r) for r in sdg_results]
-
-            df.loc[cand_idx, "sdg_label"]     = bert_sdg_labels
-            df.loc[cand_idx, "sdg_secondary"] = bert_sdg_secondary
-            df.loc[cand_idx, "sdg_score"]     = bert_sdg_scores
-            df.loc[cand_idx, "sdg_intensity"] = bert_sdg_intensities
+            df.loc[cand_idx, "sdg_label"]    = [r.sdg_top   for r in sdg_results]
+            df.loc[cand_idx, "sdg_labels"]   = [
+                "|".join(str(s) for s in r.sdg_labels) for r in sdg_results
+            ]
+            df.loc[cand_idx, "sdg_score"]    = [r.sdg_top_score for r in sdg_results]
+            df.loc[cand_idx, "sdg_intensity"]= [
+                _sim_to_intensity(r.sdg_top_score) for r in sdg_results
+            ]
+            df.loc[cand_idx, "sdg_secondary"]= [_secondary_from_scores(r) for r in sdg_results]
 
             # Sentiment — only on BERT-confirmed SDG-relevant articles
             if not sdg_only and sent_clf is not None:
                 sdg_relevant_mask = pd.Series(
-                    [r.sdg_label > 0 for r in sdg_results], index=cand_idx
+                    [r.sdg_top > 0 for r in sdg_results], index=cand_idx
                 )
-                rel_indices = cand_idx[sdg_relevant_mask]
+                rel_indices = cand_idx[sdg_relevant_mask.values]
                 rel_texts   = [cand_texts[i] for i, flag in enumerate(sdg_relevant_mask) if flag]
 
                 if len(rel_texts) > 0:
                     logger.info("  Sentiment: %d SDG-relevant articles ...", len(rel_texts))
                     sent_results = sent_clf.analyze_batch(rel_texts, batch_size=batch_size)
-                    df.loc[rel_indices, "sdg_favorability"] = [r.label for r in sent_results]
-                    df.loc[rel_indices, "sentiment_score"]  = [r.score for r in sent_results]
+                    df.loc[rel_indices, "sdg_favorability"]     = [r.label      for r in sent_results]
+                    df.loc[rel_indices, "sentiment_score"]      = [r.score      for r in sent_results]
+                    df.loc[rel_indices, "sentiment_continuous"] = [r.continuous for r in sent_results]
 
     # ── Write output ───────────────────────────────────────────────────────────
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
@@ -266,7 +279,7 @@ def main(
     if not force:
         files = [
             f for f in files
-            if not (PROCESSED_DIR / f.parent.name / (f.stem + "_classified.csv")).exists()
+            if not (PROCESSED_DIR / (f.stem + "_classified.csv")).exists()
         ]
 
     if not files:

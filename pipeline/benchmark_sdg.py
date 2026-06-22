@@ -1,13 +1,17 @@
 """Quick speed benchmark for the revised SDG classifier."""
-import sys, time, io, torch, glob
+import sys, time, io, torch
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 
+import config as _cfg
 import pandas as pd
 from classify.keyword_classifier import KeywordClassifier
 from classify.sdg_classifier import SDGClassifier
 
-files = sorted(glob.glob("../src/news/2016/*.csv"))
+_search = _cfg.NEWS_CLEAN_DIR if _cfg.NEWS_CLEAN_DIR.exists() else _cfg.NEWS_DATA_DIR
+files = sorted(_search.glob("news_*.csv"))
+if not files:
+    sys.exit(f"No news_*.csv files found in {_search}")
 df = pd.read_csv(files[0], dtype=str, encoding="utf-8-sig", low_memory=False)
 
 kw = KeywordClassifier()

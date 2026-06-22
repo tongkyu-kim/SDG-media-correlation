@@ -166,9 +166,19 @@ SDG_ANCHORS: dict[int, str] = {
 
 @dataclass
 class SDGResult:
-    sdg_label:     int
-    sdg_score:     float
-    sdg_intensity: int
+    sdg_label:     int           # top SDG 1-17, or 0 if below threshold
+    sdg_score:     float         # similarity score of top SDG
+    sdg_intensity: int           # 0-3 relevance level
+    all_scores:    dict = field(default_factory=dict)  # {sdg: score} for all 17
+
+
+@dataclass
+class SDGMultiResult:
+    """Multi-label result: all SDGs that score above SIM_THRESHOLD."""
+    sdg_labels:    list          # all SDGs above threshold, sorted by score desc
+    sdg_scores:    dict          # {sdg: score} for above-threshold SDGs only
+    sdg_top:       int           # highest-scoring SDG (0 if none above threshold)
+    sdg_top_score: float
     all_scores:    dict = field(default_factory=dict)
 
 
@@ -235,13 +245,16 @@ class SDGClassifier:
                 results.extend(decoded)
         return results
 
-    def _raw_to_result(self, similarities: np.ndarray, original_ko: str) -> SDGResult:
-        kw = keyword_scores(original_ko)
+    def _fuse_scores(self, similarities: np.ndarray, original_ko: str) -> dict:
+        """Apply keyword boost and return fused {sdg: score} dict."""
+        kw    = keyword_scores(original_ko)
         fused = {sdg: float(similarities[i]) for i, sdg in enumerate(self._sdg_ids)}
         for sdg, hits in kw.items():
             boost = min(hits * KEYWORD_BOOST_PER_HIT, MAX_KEYWORD_BOOST)
             fused[sdg] = min(1.0, fused.get(sdg, 0.0) + boost)
+        return fused
 
+    def _fused_to_single(self, fused: dict) -> SDGResult:
         top   = max(fused, key=fused.__getitem__)
         score = fused[top]
         return SDGResult(
@@ -251,27 +264,53 @@ class SDGClassifier:
             all_scores   = {k: round(v, 4) for k, v in fused.items()},
         )
 
+    def _fused_to_multi(self, fused: dict) -> SDGMultiResult:
+        above = {sdg: round(s, 4) for sdg, s in fused.items() if s >= SIM_THRESHOLD}
+        ranked = sorted(above.keys(), key=above.__getitem__, reverse=True)
+        top    = ranked[0] if ranked else 0
+        return SDGMultiResult(
+            sdg_labels    = ranked,
+            sdg_scores    = above,
+            sdg_top       = top,
+            sdg_top_score = round(fused[top], 4) if top else 0.0,
+            all_scores    = {k: round(v, 4) for k, v in fused.items()},
+        )
+
+    def _embed(self, translated: List[str], batch_size: int) -> np.ndarray:
+        prefixed = [f"query: {t[:512]}" for t in translated]
+        return self._embed_model.encode(
+            prefixed, batch_size=batch_size,
+            normalize_embeddings=True, show_progress_bar=False,
+        )
+
     def classify_batch(self, texts: List[str], batch_size: int = 128) -> List[SDGResult]:
+        """Single-label classification (backward compatible)."""
         self._load_translator()
         self._load()
-
         logger.info("Translating %d texts ko→en ...", len(texts))
-        translated = self._translate_batch(texts, batch_size=min(64, batch_size))
-
-        # E5 uses "query:" prefix for texts being compared against passages
-        prefixed = [f"query: {t[:512]}" for t in translated]
-        article_embeddings = self._embed_model.encode(
-            prefixed,
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        similarities = article_embeddings @ self._sdg_embeddings.T  # (n, 17)
-
+        translated   = self._translate_batch(texts, batch_size=min(64, batch_size))
+        similarities = self._embed(translated, batch_size) @ self._sdg_embeddings.T
         return [
-            self._raw_to_result(similarities[i], texts[i])
+            self._fused_to_single(self._fuse_scores(similarities[i], texts[i]))
+            for i in range(len(texts))
+        ]
+
+    def classify_multilabel_batch(
+        self, texts: List[str], batch_size: int = 128
+    ) -> List[SDGMultiResult]:
+        """Multi-label classification: returns all SDGs above SIM_THRESHOLD."""
+        self._load_translator()
+        self._load()
+        logger.info("Translating %d texts ko→en (multi-label) ...", len(texts))
+        translated   = self._translate_batch(texts, batch_size=min(64, batch_size))
+        similarities = self._embed(translated, batch_size) @ self._sdg_embeddings.T
+        return [
+            self._fused_to_multi(self._fuse_scores(similarities[i], texts[i]))
             for i in range(len(texts))
         ]
 
     def classify(self, text: str) -> SDGResult:
         return self.classify_batch([text])[0]
+
+    def classify_multilabel(self, text: str) -> SDGMultiResult:
+        return self.classify_multilabel_batch([text])[0]

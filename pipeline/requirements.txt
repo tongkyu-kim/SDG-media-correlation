@@ -10,5 +10,7 @@ scikit-learn>=1.4.0
 scipy>=1.13.0
 torch>=2.2.0
 transformers>=4.40.0
+sentence-transformers>=2.5.0
+sentencepiece>=0.1.99
 # Install with: pip install torch --index-url https://download.pytorch.org/whl/cu121
 # for CUDA support. CPU-only version is installed by default.
