@@ -20,17 +20,33 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Data files (except examples)
+# Data files (except examples and templates)
 src/oda/*.csv
 src/oda/*.xlsx
 src/raw/*.xlsx
 src/raw/*.xls
+src/raw/*.csv
 src/processed/*
-src/news/**/*.csv
-src/news/**/*.xlsx
+src/news/
+src/labels/*.csv
+src/termlist/*.xls
+src/termlist/*.xlsx
 !src/oda/.gitkeep
 !src/raw/.gitkeep
 !src/processed/.gitkeep
+!src/labels/.gitkeep
+
+# Labeling sheets in docs/ — share via Google Sheets, not git
+docs/*.csv
+docs/*.xlsx
+
+# Trained model weights (can be hundreds of MB)
+models/
+pipeline/models/
+*.bin
+*.safetensors
+*.pt
+*.pth
 
 # Log files
 *.log
