@@ -28,13 +28,17 @@ src/raw/*.xls
 src/raw/*.csv
 src/processed/*
 src/news/
+src/news_processed/*
 src/labels/*.csv
 src/termlist/*.xls
 src/termlist/*.xlsx
+src/validation/*
 !src/oda/.gitkeep
 !src/raw/.gitkeep
 !src/processed/.gitkeep
 !src/labels/.gitkeep
+!src/news_processed/.gitkeep
+!src/validation/.gitkeep
 
 # Labeling sheets in docs/ — share via Google Sheets, not git
 docs/*.csv
@@ -76,3 +80,10 @@ pipeline/.cache/
 .env.development.local
 .env.test.local
 .env.production.local
+
+# AWS SSH key pairs — never commit private keys
+*.pem
+s3_contents.txt
+
+# Personal session notes — references AWS account/instance IDs
+SESSION_CONTEXT.md
