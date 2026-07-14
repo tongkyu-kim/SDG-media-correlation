@@ -64,8 +64,6 @@ SDG-media-correlation/
 │   ├── validate_ml.py                  # Step 10: accuracy, Cohen's κ, replication check
 │   ├── benchmark_sdg.py                # GPU/CPU throughput benchmark for the SDG classifier
 │   └── panel_prelim.py                 # Preliminary panel correlations
-│
-└── index.html                          # ODA exploratory dashboard (browser prototype)
 ```
 
 ## Pipeline
@@ -182,10 +180,6 @@ BERT-based steps (`run_classify.py`, `train_devrel_classifier.py`) run on CPU
 but are much faster with a CUDA GPU. `torch.cuda.is_available()` auto-detects
 this — no separate config needed, just make sure the CUDA-enabled build of
 PyTorch is installed if you have a GPU.
-
-## Exploratory Dashboard
-
-`index.html` is a browser-based prototype for exploring the ODA dataset. Open it directly in a modern browser — no server required.
 
 ## Status
 

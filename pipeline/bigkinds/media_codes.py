@@ -7,6 +7,8 @@ Each outlet has a numeric code; categories are logical groupings used internally
 Source: BigKinds provider list (bigkinds.or.kr 수집 언론사 목록)
 """
 
+from __future__ import annotations
+
 from typing import Dict, List
 
 # ── Category constants ────────────────────────────────────────────────────────

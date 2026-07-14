@@ -8,6 +8,8 @@ Each list contains high-precision terms. Breadth is deliberately limited to
 reduce false positives; coverage is handled by the ML classifier.
 """
 
+from __future__ import annotations
+
 from typing import Dict, List
 
 # Format: { sdg_number: [keyword, ...] }
@@ -15,9 +17,12 @@ from typing import Dict, List
 
 SDG_KEYWORDS_KO: Dict[int, List[str]] = {
     1: [
-        "빈곤", "극빈", "기초생활수급", "생계급여", "취약계층", "저소득층",
-        "사회안전망", "빈곤율", "빈곤층", "절대빈곤", "상대적 빈곤",
-        "기초생활보장", "사각지대", "극빈층",
+        # 기초생활수급/생계급여/사회안전망/기초생활보장/사각지대 removed —
+        # Korea-specific welfare-administration terms; they fire on Korean
+        # domestic policy news, not foreign poverty.
+        "빈곤", "극빈", "취약계층", "저소득층",
+        "빈곤율", "빈곤층", "절대빈곤", "상대적 빈곤",
+        "극빈층",
     ],
     2: [
         "식량안보", "기아", "굶주림", "영양결핍", "식량부족", "영양부족",
@@ -25,12 +30,15 @@ SDG_KEYWORDS_KO: Dict[int, List[str]] = {
         "식량불안", "영양실조", "아동 영양",
     ],
     3: [
+        # 의원 removed — homonym collision with "lawmaker/assemblyman"
+        # (국회의원 등), was firing on political news, not clinics.
+        # 병원/건강보험/건강검진/의료비/비만/당뇨/고혈압/암 검진/건강수명/
+        # 건강관리/만성질환 removed — generic Korean domestic healthcare
+        # vocabulary that fires on ordinary hospital/checkup feature articles.
         "보건의료", "공중보건", "전염병", "감염병", "의료접근성",
-        "건강보험", "의료체계", "백신", "예방접종", "사망률", "모성사망",
+        "의료체계", "백신", "예방접종", "사망률", "모성사망",
         "신생아 사망", "에이즈", "결핵", "말라리아", "정신건강",
-        "의약품 접근", "유니버설 헬스케어", "건강검진", "의료비",
-        "비만", "당뇨", "고혈압", "암 검진", "병원", "의원",
-        "건강수명", "건강관리", "만성질환",
+        "의약품 접근", "유니버설 헬스케어",
     ],
     4: [
         "교육기회", "교육격차", "교육접근성", "문해력", "초등교육",
@@ -48,23 +56,32 @@ SDG_KEYWORDS_KO: Dict[int, List[str]] = {
         "하수처리", "수도 인프라",
     ],
     7: [
+        # 전기차 removed — generic Korean auto-industry term, not an
+        # energy-access signal.
         "재생에너지", "신재생에너지", "태양광", "풍력", "에너지전환",
         "에너지 빈곤", "에너지 접근", "전력화", "에너지효율",
-        "탄소중립 에너지", "수소에너지", "전기차", "에너지 안보",
+        "탄소중립 에너지", "수소에너지", "에너지 안보",
         "청정에너지",
     ],
     8: [
-        "일자리 창출", "고용률", "청년 실업", "노동권", "최저임금",
-        "비정규직", "경제성장", "포용성장", "노동환경", "산업재해",
-        "아동노동", "강제노동", "공정무역", "중소기업",
+        # 고용률/청년 실업/최저임금/비정규직/경제성장/중소기업 removed —
+        # routine Korean domestic labor-market and economy vocabulary,
+        # fires on any Korean jobs/election/economy story.
+        "일자리 창출", "노동권",
+        "포용성장", "노동환경", "산업재해",
+        "아동노동", "강제노동", "공정무역",
     ],
     9: [
-        "인프라", "디지털 전환", "혁신기술", "연구개발", "산업화",
-        "스마트 제조", "4차 산업혁명", "인터넷 접근", "디지털 격차",
-        "기술이전", "첨단산업", "제조업 혁신",
+        # 디지털 전환/혁신기술/연구개발/스마트 제조/4차 산업혁명/첨단산업/
+        # 제조업 혁신/인프라 removed — generic Korean corporate/tech-sector
+        # buzzwords, essentially never about developing-country industrialization.
+        "산업화", "인터넷 접근", "디지털 격차",
+        "기술이전",
     ],
     10: [
-        "불평등", "소득격차", "양극화", "경제 불평등", "사회 이동성",
+        # 불평등/소득격차/양극화/경제 불평등 removed — the most common
+        # generic terms in ordinary Korean domestic economic commentary.
+        "사회 이동성",
         "기회 불평등", "취약계층 지원", "차별 금지", "사회적 포용",
         "이민자 권리", "이주노동자",
     ],
@@ -74,9 +91,11 @@ SDG_KEYWORDS_KO: Dict[int, List[str]] = {
         "문화유산 보존", "도시 녹지",
     ],
     12: [
+        # ESG removed — generic corporate buzzword in virtually all Korean
+        # business news. 재활용 removed — generic domestic recycling term.
         "지속가능한 소비", "지속가능한 생산", "자원 효율", "음식물 낭비",
-        "플라스틱 폐기물", "재활용", "순환경제", "친환경 소비",
-        "과소비", "탄소발자국", "ESG", "녹색 구매",
+        "플라스틱 폐기물", "순환경제", "친환경 소비",
+        "과소비", "탄소발자국", "녹색 구매",
     ],
     13: [
         "기후변화", "기후위기", "온실가스", "탄소배출", "탄소중립",

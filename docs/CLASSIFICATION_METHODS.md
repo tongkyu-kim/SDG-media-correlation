@@ -78,6 +78,13 @@ The classification proceeds in three sequential stages, each with a specific rol
 
 **Limitation to disclose:** Keyword lists have language-specific coverage gaps. Terms that appear in English-language loanwords in Korean news (e.g., "ODA," "SDG") are captured; idiomatic expressions for the same concept without the canonical keyword may be missed. The ML stage is specifically designed to recover some of these cases via semantic similarity.
 
+**Keyword list revision (2026-07-14):** Manual review of false positives in the hand-coded annotation sample (Section 4.4) identified two classes of problem terms in `keywords_ko.py`, pruned from the SDG 1, 3, 7, 8, 9, 10, and 12 lists:
+
+1. **A homonym bug:** 의원 was listed under SDG 3 to mean "clinic," but the identical string also means "lawmaker/assemblyman" (as in 국회의원). This was firing SDG-3 hits on ordinary political news — one case showed 14 spurious hits on an article entirely about a local politician, none about health.
+2. **Generic Korean-domestic vocabulary:** terms such as 경제성장, 최저임금, 비정규직 (SDG 8), 4차 산업혁명, 디지털 전환 (SDG 9), 불평등, 소득격차 (SDG 10), and ESG (SDG 12) appear routinely in ordinary Korean domestic economic/political reporting with no connection to a developing country's situation. These inflated keyword-hit counts on domestic articles, feeding false positives into the Stage 2 country-co-occurrence filter.
+
+Combined with the Section 3.2 crosswalk fix, candidate-stratum precision on the hand-coded sample rose from 9.5% → 25.7% (re-scoring the same 595 articles with both fixes applied, before any new sampling).
+
 ### 3.2 Stage 2: ODA Recipient Country Filter
 
 **What it does:** From keyword-flagged articles, only those that mention at least one country from the set of Korea's 147 ODA recipient countries (or have an explicit Korean ODA actor mention: KOICA, EDCF, 공적개발원조) are sent to the ML classifier.
@@ -99,8 +106,14 @@ The filter was restricted to countries appearing in Korea's ODA recipient data r
 - Short Korean country names (≤3 characters: 이란=Iran, 수단=Sudan, 오만=Oman, 피지=Fiji) use negative lookbehind regex `(?<![가-힣])` to prevent false matches against common Korean syllables (e.g., "건강이란 무엇인가" — "what is health called" — should not trigger Iran detection).
 - The recipient country set is loaded at runtime from `oda_country_sdg_annual.csv`, ensuring consistency between the ODA dataset and the media filter.
 
+**Bug found and fixed (2026-07-14):** `oda_country_sdg_annual.csv` had never actually been generated at the path this filter reads from — `src/processed/oda/` was an empty directory. When that file is missing, `detect_oda_recipient_countries()` silently falls back to matching **any** of the ~170 countries in the lookup table, i.e. the donor-country exclusion described above was not actually running. This affected both the human-annotation sampler (`sample_for_labeling.py`) and this classification pipeline (`run_classify.py`, `precheck_classify.py`) identically, since both call the same function.
+
+Measured impact, using the hand-coded annotation sample (Section 4.4) re-scored before and after the fix: candidate-stratum precision rose from **9.5% to 15.2%** from this fix alone. A silent-failure guard (`logger.warning`) was added so this cannot recur invisibly — if the crosswalk file is missing (e.g. after a fresh clone, since `src/processed/*` is gitignored), the pipeline now logs a warning rather than degrading silently. **Anyone re-running this pipeline must run `preprocess_oda.py` before any classification step**, or the donor-exclusion filter will not function.
+
 **Limitation to disclose:**  
 Articles about global multilateral development initiatives (e.g., G20 development finance communiqués, UNGA SDG debates) that do not name specific recipient countries are excluded from the media variable. This introduces a downward bias for SDG17 (Partnerships/Financing for Development), which is often discussed in aggregate terms. This is acknowledged and SDG17 counts should be interpreted as a lower bound.
+
+Separately, China remains a technical ODA recipient in Korea's data (historical KOICA/EDCF loans) despite functioning as a major power in most Korean news coverage — most Korean articles mentioning China are not about "a developing country's development situation" in the sense this filter intends. This edge case was not corrected in the keyword/country filter itself (doing so would require excluding a country that is a genuine, if atypical, recipient in the underlying ODA data); it is instead handled at the human-coding stage via the annotation codebook (Section 4.4).
 
 ### 3.3 Stage 3: Korean → English Translation + Multilingual Sentence Embedding
 
@@ -145,6 +158,10 @@ This design ensures the embedding comparison is sensitive to the development con
 - `SIM_THRESHOLD = 0.35` for the English-input configuration
 - Note: this threshold is *not* the same as the earlier multilingual configuration (0.45), because English–English cosine similarity in the E5 space distributes differently than Korean–English similarity. The threshold was set to accept clearly development-relevant translations while rejecting domestic-context translations.
 - Additionally: keyword boost (+0.03 per domain-specific Korean keyword hit, capped at +0.15) is applied to the cosine score. This acts as a soft smoothing for articles where high-quality Korean development keywords (e.g., "공적개발원조," "KOICA") appear despite imperfect translation.
+
+**Translation decoding parameters (revised 2026-07-14):** `model.generate()` previously used the MarianMT checkpoint's own defaults (`num_beams=6`, `max_length=512`, no repetition penalty). On real GPU hardware (Tesla T4) this measured at ~1 article/sec, implying ~62 hours for the estimated candidate population — impractical at scale. Diagnosis found the 6-beam search and 512-token ceiling were not improving translation quality on this input (title + comma-separated keyword fragments, not full sentences): the original settings produced the same degenerate repetition artifacts (e.g. a keyword-stuffed source list translating to "lips, lips, lips..." repeated dozens of times) as greedy decoding, just ~90x slower. This repetition is largely a faithful reflection of the source data — Korean news keyword fields are frequently SEO-padded with the same term repeated many times — rather than a decoding failure per se.
+
+Revised settings — `num_beams=1`, `max_length=80`, `no_repeat_ngram_size=3` — measured at ~26 articles/sec on the same hardware (26x speedup) with no measurable quality difference on inspected samples, since this translation step feeds a similarity classifier rather than being read directly. `max_length=80` is sized for the actual output length of translated titles/keyword fragments, not general-purpose document translation.
 
 ---
 
@@ -192,7 +209,48 @@ Each year's sampling quota is drawn proportionally across strata (default 50% ca
 
 **Reporting caveat:** Because this is an enriched, not simple-random, sample, the prevalence of positive labels within it does **not** estimate corpus-wide prevalence and must not be reported as such. Precision/recall/F1 computed within the `candidate` stratum are valid estimates for that stratum specifically — which is also the exact population the trained classifiers are applied to, making it the right stratum for primary validation metrics.
 
-**Current sample** (2026-07-09): n=595, seed=2025, overlap=150 (both coders label these first), stratum counts candidate=306/borderline=170/negative=119, evenly distributed across 2007–2023 (35/year).
+**Round 2 sample** (generated 2026-07-09, hand-coded by both coders): n=595, seed=2025, overlap=150, stratum counts candidate=306/borderline=170/negative=119, evenly distributed across 2007–2023 (35/year). Hand-coding this sample surfaced the candidate-filter precision problem documented in Sections 3.1–3.2 (9.5% precision) and prompted the bug fix and keyword revision described there.
+
+**Round 3 sample** (regenerated 2026-07-14, after the Section 3.1–3.2 fixes): drawn fresh from the corpus with the corrected filter — **not the same underlying articles as Round 2**, despite identical stratum counts (306/170/119 is a quota artifact of the 50/30/20 sampling design, not evidence the article set is unchanged; direct comparison confirmed <1% article-ID overlap between a from-scratch draw under the old vs. new filter code). Both coders hand-coded this round.
+
+**Inter-coder reliability, Round 3 (final, 2026-07-14):**
+
+| Metric | Value | Scope |
+|---|---|---|
+| Cohen's κ | 0.885 | 150 overlap rows |
+| Krippendorff's α | 0.885 | 150 overlap rows |
+| Krippendorff's α | 0.739 | 445 non-overlap rows (both coders independently labeled the full sample, not just the designated overlap) |
+| **Krippendorff's α** | **0.772** | **all 595 rows** |
+
+This did not converge on the first pass. An intermediate round showed κ=0.577 (moderate, below the conventional 0.60 acceptability threshold), driven by a specific, resolvable disagreement pattern rather than noise: one coder's revisions correctly extended "development-relevant" to cover conflict/crisis stories in developing countries (coups, earthquakes, epidemics) that don't mention Korean aid — a category the printed coder instructions under-specified (the fuller rule, "poverty, health, education, conflict, climate, aid," existed only as a code comment in `sample_for_labeling.py`, never surfaced to coders) — but then over-applied the same fix to domestic-Korean and developed-country stories that merely touched an SDG-adjacent theme (e.g., Dalai Lama's US visit, Korean domestic labor disputes), violating the prior "developing country" gate. A second revision pass, applying a single mechanical rule — "is the story's main geographic subject a developing/ODA-recipient country, not Korea or a high-income country" — before any thematic judgment, resolved the large majority of disagreements and produced the final numbers above.
+
+**Diagnostic note for future rounds:** both coders independently hand-coded all 595 rows rather than splitting the non-overlap 445 as originally planned, which is why Krippendorff's α (which tolerates partial/unbalanced coverage per unit) was used alongside Cohen's κ (which requires complete paired coverage) — α on the full 595 is the more representative reliability estimate for this dataset, not just the designated overlap subset.
+
+### 4.5 Supervised Classifier Training Results (2026-07-14)
+
+Both supervised classifiers were trained on the 560 Round-3 rows where both coders agreed on `label_development_relevant` (35 of the 595 hand-coded rows had unresolved disagreement and were excluded from training data rather than tie-broken, to avoid injecting label noise; 487 negative / 73 positive).
+
+**`train_oda_classifier.py`** (TF-IDF char n-gram + LogisticRegression, 5-fold stratified CV):
+
+| Metric | Value |
+|---|---|
+| Accuracy | 0.909 ± 0.014 |
+| F1 | 0.553 ± 0.083 |
+| Precision | 0.766 ± 0.101 |
+| Recall | 0.437 ± 0.077 |
+| ROC-AUC | 0.945 ± 0.020 |
+
+High ROC-AUC with modest recall at the default 0.5 threshold indicates the model ranks positives well but is conservative given the small positive class (73 examples) — recall could likely be improved by lowering the decision threshold, at a precision cost, if higher recall is prioritized for a downstream stage.
+
+**`train_devrel_classifier.py`** (fine-tuned `klue/roberta-base`, 4 epochs, 20% held-out validation, CPU):
+
+| Metric | Value (best epoch) |
+|---|---|
+| F1 | 0.667 |
+| Accuracy | 0.893 |
+| ROC-AUC | 0.946 |
+
+**Note on the `oda_relevant` vs. `label_development_relevant` distinction:** `train_oda_classifier.py` was designed around a narrower `oda_relevant` concept (its seed keyword list is ODA/aid-program-specific: KOICA, EDCF, 공적개발원조), while the actual annotation codebook coders used asks the broader "does this discuss a developing country's development situation" question (`label_development_relevant`). For this training run, `label_development_relevant` was used directly as `oda_relevant` (i.e., treated as equivalent) rather than conducting a separate narrower labeling round. This is a simplification worth flagging for peer review — the two constructs are related but not identical, and the reported metrics reflect the broader construct.
 
 ---
 
@@ -236,4 +294,4 @@ Each year's sampling quota is drawn proportionally across strata (default 50% ca
 
 ---
 
-*Last updated: 2026-07-09. Update this document when any pipeline parameter changes.*
+*Last updated: 2026-07-14. Update this document when any pipeline parameter changes.*

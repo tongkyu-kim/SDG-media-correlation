@@ -240,7 +240,12 @@ class SDGClassifier:
                 tok = tokenizer(chunk, return_tensors="pt", padding=True,
                                 truncation=True, max_length=256)
                 tok = {k: v.to(device) for k, v in tok.items()}
-                gen = model.generate(**tok)
+                # Model defaults (num_beams=6, max_length=512) cost ~90x more
+                # compute than needed for these short title/keyword strings and
+                # don't improve output quality here (verified on real data) --
+                # greedy decoding + a repetition guard is equally good and far
+                # faster, since this feeds a similarity classifier, not human reading.
+                gen = model.generate(**tok, num_beams=1, max_length=80, no_repeat_ngram_size=3)
                 decoded = tokenizer.batch_decode(gen, skip_special_tokens=True)
                 results.extend(decoded)
         return results

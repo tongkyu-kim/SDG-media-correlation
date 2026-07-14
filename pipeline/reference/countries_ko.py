@@ -306,14 +306,24 @@ def ko_to_english(ko_name: str) -> str | None:
 # triggering the BERT candidate filter, eliminating false positives from
 # domestic Korean articles that mention developed countries in passing.
 
+import logging as _logging
 import pathlib as _pathlib
 import csv as _csv
+
+_logger = _logging.getLogger(__name__)
 
 
 def _load_oda_recipient_iso3() -> frozenset[str] | None:
     csv_path = (_pathlib.Path(__file__).parent.parent.parent
                 / "src" / "processed" / "oda" / "oda_country_sdg_annual.csv")
     if not csv_path.exists():
+        _logger.warning(
+            "%s not found -- run preprocess_oda.py first. "
+            "Falling back to ALL countries (no donor exclusion), which will "
+            "let USA/Japan/China/etc. count as ODA-recipient mentions and "
+            "inflate false positives in the candidate/borderline filter.",
+            csv_path,
+        )
         return None
     try:
         iso3_set: set[str] = set()
@@ -324,7 +334,11 @@ def _load_oda_recipient_iso3() -> frozenset[str] | None:
                 if iso3 and iso3 != "---":
                     iso3_set.add(iso3)
         return frozenset(iso3_set)
-    except Exception:
+    except Exception as e:
+        _logger.warning(
+            "Could not parse %s (%s) -- falling back to ALL countries "
+            "(no donor exclusion).", csv_path, e,
+        )
         return None
 
 
