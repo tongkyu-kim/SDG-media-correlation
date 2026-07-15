@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 import config
 from classify.keyword_classifier import KeywordClassifier
-from reference.countries_ko import detect_countries, detect_oda_recipient_countries
+from classify.candidate_filter import compute_signals, classify_stratum
 
 BASE_DIR   = Path(__file__).parent.parent
 DOCS_DIR   = BASE_DIR / "docs"
@@ -101,26 +101,15 @@ def _read_file(f: Path, n_rows: int | None = None) -> pd.DataFrame | None:
         return None
 
 
-def _stratify(df: pd.DataFrame, kw_clf: KeywordClassifier, bert_min_hits: int = 2) -> pd.Series:
+def _stratify(df: pd.DataFrame, kw_clf: KeywordClassifier, bert_min_hits: int = 1) -> pd.Series:
     """
-    Bucket articles using the same signals run_classify.py uses to route
-    articles to BERT, so the "candidate" stratum matches the population the
-    real classifier actually scores.
+    Bucket articles using the same v2 candidate rule run_classify.py uses to
+    route articles to BERT (classify/candidate_filter.py), so the "candidate"
+    stratum matches the population the real classifier actually scores.
     """
-    kw    = kw_clf.classify_dataframe(df)
-    short = kw_clf._text_short(df)
-    long_ = kw_clf._text_long(df, short)
-
-    has_oda_country = long_.apply(lambda t: bool(detect_oda_recipient_countries(t)) if t else False)
-    has_any_country = long_.apply(lambda t: bool(detect_countries(t)) if t else False)
-
-    is_candidate  = (kw["policy_actor"] == 1) | ((kw["kw_sdg_hits"] >= bert_min_hits) & has_oda_country)
-    is_borderline = ~is_candidate & ((kw["kw_sdg_hits"] > 0) | has_any_country)
-
-    stratum = pd.Series("negative", index=df.index)
-    stratum[is_borderline] = "borderline"
-    stratum[is_candidate]  = "candidate"
-    return stratum
+    kw = kw_clf.classify_dataframe(df)
+    signals = compute_signals(df, kw_clf)
+    return classify_stratum(kw, signals, bert_min_hits=bert_min_hits)
 
 
 def enriched_stratified_sample(

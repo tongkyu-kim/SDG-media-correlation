@@ -25,7 +25,8 @@ import click
 
 from classify.keyword_classifier import KeywordClassifier
 from classify.sdg_classifier import SDGClassifier
-from reference.countries_ko import detect_countries, detect_oda_recipient_countries
+from classify.candidate_filter import compute_signals, is_candidate
+from reference.countries_ko import detect_oda_recipient_countries
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -71,27 +72,22 @@ def main(csv_path: str, bert_min_hits: int) -> None:
     n_kw_sdg = (kw["kw_sdg_label"] > 0).sum()
     click.echo(f"  Keyword SDG-relevant: {n_kw_sdg:,} / {len(df):,} ({n_kw_sdg/len(df)*100:.1f}%)")
 
-    # ── Country filter ─────────────────────────────────────────────────────────
-    click.echo("\n[2/4] Country-mention filter (ODA recipients only) ...")
-    text_long = kw_clf._text_long(df, kw_clf._text_short(df))
-    has_any_country = text_long.apply(lambda t: bool(detect_countries(t)))
-    has_oda_country = text_long.apply(lambda t: bool(detect_oda_recipient_countries(t)))
-
-    bert_mask = (
-        (kw["policy_actor"] == 1) |
-        ((kw["kw_sdg_hits"] >= bert_min_hits) & has_oda_country)
-    )
+    # ── Country + vocab filter (v2 candidate rule) ─────────────────────────────
+    click.echo("\n[2/4] v2 candidate filter (OR across signals — see classify/candidate_filter.py) ...")
+    signals = compute_signals(df, kw_clf)
+    bert_mask = is_candidate(kw, signals, bert_min_hits=bert_min_hits)
     n_bert = bert_mask.sum()
-    n_all_country  = ((kw["kw_sdg_hits"] >= bert_min_hits) & has_any_country).sum()
-    n_oda_country  = ((kw["kw_sdg_hits"] >= bert_min_hits) & has_oda_country).sum()
-    n_kw_only = ((kw["kw_sdg_hits"] >= bert_min_hits) & ~has_oda_country & (kw["policy_actor"] == 0)).sum()
+    n_oda_country = ((kw["kw_sdg_hits"] >= bert_min_hits) & signals["has_oda_country"]).sum()
+    n_kw_only = ((kw["kw_sdg_hits"] >= bert_min_hits) & ~signals["has_oda_country"] & (kw["policy_actor"] == 0)).sum()
 
-    click.echo(f"  Any country mention:        {n_all_country:,} (old filter)")
-    click.echo(f"  ODA recipient country only: {n_oda_country:,} (new filter — excludes USA/Japan/etc)")
-    click.echo(f"  BERT candidates: {n_bert:,} ({n_bert/len(df)*100:.1f}%)")
-    click.echo(f"    of which policy_actor=1: {(kw['policy_actor']==1).sum():,}")
-    click.echo(f"    of which keyword+ODA-country: {n_oda_country:,}")
-    click.echo(f"  Keyword-hits but no ODA country (keyword-only): {n_kw_only:,}")
+    click.echo(f"  BERT candidates (v2, OR'd signals): {n_bert:,} ({n_bert/len(df)*100:.1f}%)")
+    click.echo(f"    of which policy_actor=1:           {(kw['policy_actor']==1).sum():,}")
+    click.echo(f"    of which kw_sdg_hits>=min:         {(kw['kw_sdg_hits'] >= bert_min_hits).sum():,}")
+    click.echo(f"    of which ODA-country mention:      {signals['has_oda_country'].sum():,}")
+    click.echo(f"    of which dev-vocab hit:            {signals['has_dev_vocab'].sum():,}")
+    click.echo(f"    of which cooccur-sector+country:   {signals['has_cooccur_sector'].sum():,}")
+    click.echo(f"  (for reference, v1 keyword+ODA-country AND-rule alone: {n_oda_country:,}; "
+               f"keyword-hits-with-no-ODA-country: {n_kw_only:,})")
 
     # ── E5 classification on BERT candidates (with translation) ──────────────
     click.echo(f"\n[3/4] Translate + E5 SDG classification on {n_bert:,} candidates ...")
@@ -157,8 +153,8 @@ def main(csv_path: str, bert_min_hits: int) -> None:
         for _, row in sub.iterrows():
             title = str(row.get(title_col, "")).strip()[:80]
             score = row["e5_score"]
-            country_flag = "🌍" if detect_oda_recipient_countries(str(row.get(title_col,"")) +
-                                                                  str(row.get(kw_col,""))) else "🇰🇷"
+            country_flag = "[intl]" if detect_oda_recipient_countries(str(row.get(title_col,"")) +
+                                                                  str(row.get(kw_col,""))) else "[domestic]"
             click.echo(f"  [{score:.2f}] {country_flag} {title}")
 
     click.echo("\nDone. Review the spot-check above — look for domestic Korean articles "

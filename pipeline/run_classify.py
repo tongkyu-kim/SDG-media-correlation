@@ -62,7 +62,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config as _cfg
 from classify.keyword_classifier import KeywordClassifier
 from classify.sdg_classifier import _sim_to_intensity
-from reference.countries_ko import detect_countries, detect_oda_recipient_countries
+from classify.candidate_filter import compute_signals, is_candidate
+from reference.countries_ko import detect_countries
 
 # Raw/clean news source; ODA-filtered output lands in PROCESSED_DIR
 NEWS_DIR      = _cfg.NEWS_CLEAN_DIR if _cfg.NEWS_CLEAN_DIR.exists() else _cfg.NEWS_DATA_DIR
@@ -168,17 +169,11 @@ def classify_file(
 
     # ── Step 2: BERT on development-relevant candidates only ─────────────────
     if sdg_clf is not None:
-        has_country = _text_long.apply(lambda t: bool(detect_oda_recipient_countries(t)))
-
-        # Candidate criteria (two tiers):
-        #   1. policy_actor: explicit KOICA/EDCF/ODA mention → always include
-        #   2. SDG keyword hits ≥ threshold AND mentions a country → development context
-        # Domestic Korean articles (health, education) score high on E5 similarity
-        # but rarely name developing countries; this filter removes them efficiently.
-        bert_mask = (
-            (kw["policy_actor"] == 1) |
-            ((kw["kw_sdg_hits"] >= bert_min_hits) & has_country)
-        )
+        # v2 candidate rule (see classify/candidate_filter.py): OR across
+        # policy_actor / keyword-hits / ODA-country / dev-vocab signals,
+        # loosened from v1's AND-conjunction to raise recall.
+        signals = compute_signals(df, kw_clf)
+        bert_mask = is_candidate(kw, signals, bert_min_hits=bert_min_hits)
         n_candidates = bert_mask.sum()
 
         if n_candidates > 0:
@@ -252,8 +247,9 @@ def find_csv_files(year: str | None = None, oda_filtered: bool = False) -> list[
               help="Articles per E5 inference batch (128 optimal for RTX 3080)")
 @click.option("--sdg-only", is_flag=True,
               help="Skip sentiment analysis (faster)")
-@click.option("--bert-min-hits", default=2, show_default=True, type=int,
-              help="Min keyword hits required to send an article to BERT (policy-actor articles always included)")
+@click.option("--bert-min-hits", default=1, show_default=True, type=int,
+              help="Min keyword hits required to send an article to BERT (policy-actor articles always included); "
+                   "v2 rule treats this as one of several OR'd signals, not an AND-requirement with country mention")
 @click.option("--keyword-only", is_flag=True,
               help="Skip BERT entirely — keyword classification only (no GPU needed)")
 @click.option("--oda-filtered", is_flag=True,

@@ -230,6 +230,14 @@ COUNTRY_MAP: dict[str, tuple[str, str, str]] = {
     "폴리네시아 지역 (미배분)":        ("---", "Polynesia Unallocated",      "PACIFIC"),
     "유럽 지역 (미배분)":              ("---", "Europe Unallocated",         "EUROPE"),
     "중동 지역 (미배분)":              ("---", "MENA Unallocated",           "MENA"),
+
+    # ── Official/long-form name aliases ────────────────────────────────────
+    # Occasionally appear in Korean news alongside the common short form
+    # already listed above. Long enough (>3 chars) to use plain substring
+    # matching without homonym risk.
+    "라오인민민주공화국": ("LAO", "Laos",         "SE_ASIA"),
+    "아이보리코스트":     ("CIV", "Côte d'Ivoire","W_AFRICA"),
+    "탄자니아연합공화국": ("TZA", "Tanzania",      "E_AFRICA"),
 }
 
 import re as _re
