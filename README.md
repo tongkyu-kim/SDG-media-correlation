@@ -18,7 +18,7 @@ This repository supports research into whether Korean news media attention to Su
 aws s3 sync s3://sdg-media-pipeline/news_processed/ "src/news_processed"
 ```
 
-Point the pipeline at the synced folder via `pipeline/.env` (`NEWS_CLEAN_DIR=<absolute path to src/news_processed>`) — see Setup below. The code default for this path is still `src/[processed-2] remove duplicate, remove unneeded columns/`; the S3-backed `src/news_processed/` naming is just the convention this project has settled on, overridden via `.env`.
+The pipeline reads from `src/news_processed/` by default; set `NEWS_CLEAN_DIR` in `pipeline/.env` to override — see Setup below.
 
 ## Repository Structure
 
@@ -172,7 +172,7 @@ aws s3 sync s3://sdg-media-pipeline/news_processed/ "src/news_processed"
 | Variable | Description |
 |---|---|
 | `NEWS_DATA_DIR` | Path to raw news CSVs (default: `src/news/`) |
-| `NEWS_CLEAN_DIR` | Path to cleaned news CSVs (default: `src/[processed-2] remove duplicate, remove unneeded columns/`) — set this to wherever you synced `news_processed/` |
+| `NEWS_CLEAN_DIR` | Path to cleaned news CSVs (default: `src/news_processed/`) — set this to wherever you synced `news_processed/` |
 | `LABELS_DIR` | Path to annotation files (default: `src/labels/`) |
 | `MODELS_DIR` | Path for saved model files (default: `models/`) |
 

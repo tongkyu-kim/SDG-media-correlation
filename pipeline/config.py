@@ -15,10 +15,7 @@ NEWS_DATA_DIR = Path(
 ).resolve()
 
 NEWS_CLEAN_DIR = Path(
-    os.getenv(
-        "NEWS_CLEAN_DIR",
-        str(_PROJECT_ROOT / "src" / "[processed-2] remove duplicate, remove unneeded columns"),
-    )
+    os.getenv("NEWS_CLEAN_DIR", str(_PROJECT_ROOT / "src" / "news_processed"))
 ).resolve()
 
 # ── Pipeline output directories ───────────────────────────────────────────────

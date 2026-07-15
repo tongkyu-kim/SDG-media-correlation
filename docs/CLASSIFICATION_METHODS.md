@@ -1,6 +1,6 @@
-# SDG Classification Methodology: Internal Notes for Peer Review Preparation
+# SDG Classification Methodology
 
-> **Purpose:** This document records the rationale behind each methodological decision in the media classification pipeline. It is written for internal use but structured as a response to anticipated peer review challenges. All choices are documented with (a) the theoretical justification, (b) the empirical check used to validate the choice, and (c) known limitations and how they are disclosed.
+> This document records the rationale behind each methodological decision in the media classification pipeline, the empirical checks used to validate each choice, and known limitations. It is organized to anticipate the questions a peer reviewer would raise about measurement validity.
 
 ---
 
@@ -61,59 +61,48 @@ From `oda_sdg_annual.csv` (2010–2023 pooled disbursements):
 
 ## 3. Media Classification Pipeline
 
-The classification proceeds in three sequential stages, each with a specific role. All stages are applied to each weekly BigKinds news file (697 files, 2010–2023).
+The classification proceeds in three sequential stages, each with a specific role, applied to the full BigKinds news corpus (2007–2025, 228 monthly files).
 
 ### 3.1 Stage 1: Korean Keyword Pre-Filter
 
-**What it does:** A rule-based classifier using Korean SDG keyword lists (derived from SDSN keyword taxonomy and Aurora SDG query system, translated and extended for Korean news vocabulary) assigns every article a candidate SDG label, an SDG hit count, and supplementary variables (aid_stance, issue_frame, crisis_type, policy_actor).
+**What it does:** A rule-based classifier using Korean SDG keyword lists (derived from the SDSN keyword taxonomy and the Aurora SDG query system, translated and extended for Korean news vocabulary) assigns every article a candidate SDG label, an SDG hit count, and supplementary variables (aid_stance, issue_frame, crisis_type, policy_actor).
 
 **Why it is necessary:**
-- The corpus contains approximately 18 million articles. Running a GPU-based embedding model on all articles is computationally prohibitive (~12,000 hours at naive rates).
-- Keyword pre-filtering to ~26% of articles is standard practice in large-scale computational text analysis (see Roberts et al. 2014; Grimmer & Stewart 2013). The pre-filter trades recall for precision: articles without any SDG-relevant keyword are extremely unlikely to be development-relevant.
+- The corpus contains on the order of 15 million articles. Running a GPU-based embedding model on all articles is computationally prohibitive.
+- Keyword pre-filtering is standard practice in large-scale computational text analysis (see Roberts et al. 2014; Grimmer & Stewart 2013). The pre-filter trades precision for recall at this stage: articles without any SDG-relevant keyword and no development-vocabulary or country signal are extremely unlikely to be development-relevant, so excluding them is low-risk, while an article admitted at this stage is refined for precision downstream (Stage 3).
 - The keyword classifier produces auxiliary variables (aid_stance, issue_frame, etc.) that serve as independent measures and robustness checks.
 
-**Validation:**  
-- Agreement between keyword SDG label and ML classifier label: **87–89%** (from pre-check on 2016 sample of 1,060 candidates)
-- The 11–13% disagreement represents cases where ML provides a better label — this is the expected behaviour of a hybrid system where ML refines rather than replaces rule-based output.
+**Keyword list curation:** Two classes of terms were identified as sources of false positives and removed from the SDG keyword lists (`keywords_ko.py`):
 
-**Limitation to disclose:** Keyword lists have language-specific coverage gaps. Terms that appear in English-language loanwords in Korean news (e.g., "ODA," "SDG") are captured; idiomatic expressions for the same concept without the canonical keyword may be missed. The ML stage is specifically designed to recover some of these cases via semantic similarity.
+1. **Homonym collisions.** 의원 was listed under SDG3 to mean "clinic," but the identical string also means "lawmaker/assemblyman" (as in 국회의원), which fired SDG-3 hits on ordinary political news.
+2. **Generic domestic vocabulary.** Terms such as 경제성장, 최저임금, 비정규직 (SDG8), 4차 산업혁명, 디지털 전환 (SDG9), 불평등, 소득격차 (SDG10), and ESG (SDG12) appear routinely in ordinary Korean domestic economic and political reporting with no connection to a developing country's situation, inflating keyword-hit counts on domestic articles.
 
-**Keyword list revision (2026-07-14):** Manual review of false positives in the hand-coded annotation sample (Section 4.4) identified two classes of problem terms in `keywords_ko.py`, pruned from the SDG 1, 3, 7, 8, 9, 10, and 12 lists:
+**Validation:**
+- Agreement between keyword SDG label and ML classifier label: **87–89%** (pre-check on a 2016 sample of 1,060 candidates). The 11–13% disagreement represents cases where the ML stage provides a better label — expected behavior of a hybrid system in which ML refines rather than replaces rule-based output.
+- See Section 4.4 for candidate-stratum precision and recall estimates from hand-coded validation data.
 
-1. **A homonym bug:** 의원 was listed under SDG 3 to mean "clinic," but the identical string also means "lawmaker/assemblyman" (as in 국회의원). This was firing SDG-3 hits on ordinary political news — one case showed 14 spurious hits on an article entirely about a local politician, none about health.
-2. **Generic Korean-domestic vocabulary:** terms such as 경제성장, 최저임금, 비정규직 (SDG 8), 4차 산업혁명, 디지털 전환 (SDG 9), 불평등, 소득격차 (SDG 10), and ESG (SDG 12) appear routinely in ordinary Korean domestic economic/political reporting with no connection to a developing country's situation. These inflated keyword-hit counts on domestic articles, feeding false positives into the Stage 2 country-co-occurrence filter.
+**Limitation to disclose:** Keyword lists have language-specific coverage gaps. Terms that appear as English-language loanwords in Korean news (e.g., "ODA," "SDG") are captured; idiomatic Korean expressions for the same concept without a canonical keyword may be missed. The ML stage is designed to recover some of these cases via semantic similarity.
 
-Combined with the Section 3.2 crosswalk fix, candidate-stratum precision on the hand-coded sample rose from 9.5% → 25.7% (re-scoring the same 595 articles with both fixes applied, before any new sampling).
+### 3.2 Stage 2: Development Signal Filter
 
-### 3.2 Stage 2: ODA Recipient Country Filter
+**What it does:** Articles are routed to the ML stage if any of the following hold: (a) an explicit Korean ODA actor is mentioned (KOICA, EDCF, 공적개발원조); (b) the article has at least one SDG keyword hit **and** mentions a country from Korea's ODA recipient set; (c) the article matches a broader development/organization/agenda vocabulary (international organizations, Korean development actors beyond KOICA/EDCF, development/SDG-agenda/humanitarian/climate/trade-infrastructure vocabulary, and major development initiatives — `development_terms_ko.py`); or (d) a co-occurrence-only sector term (school, hospital, SME, etc.) appears together with any country mention.
 
-**What it does:** From keyword-flagged articles, only those that mention at least one country from the set of Korea's 147 ODA recipient countries (or have an explicit Korean ODA actor mention: KOICA, EDCF, 공적개발원조) are sent to the ML classifier.
+**Theoretical justification:** The mechanism under test is *Korean domestic media coverage of development issues in specific recipient countries → Korean government ODA allocation decisions for those countries*. Media coverage must be *about* a recipient country to be relevant to the allocation decision — an article about Korean domestic health policy, even using development-relevant health vocabulary, does not belong to the treatment variable. This filtering step operationalizes "development-relevant media coverage," analogous to geographic targeting in other media-ODA studies (Eisensee & Strömberg 2007 use disaster-country mentions as the unit of relevance; Balcells et al. use country-specific conflict coverage).
 
-**Theoretical justification:**  
-The media effects mechanism we are testing is: *Korean domestic media coverage of development issues in specific recipient countries → Korean government ODA allocation decisions for those countries.* This implies that media coverage must be *about* a recipient country to be relevant to the allocation decision. An article about Korean domestic health policy, even if it uses development-relevant health vocabulary, does not belong to the treatment variable.
+**Design choice: ODA recipient countries only (not all countries).** The country signal is restricted to Korea's ODA recipient set rather than all countries, for two reasons:
 
-This filtering step operationalizes the concept of "development-relevant media coverage." This is analogous to geographic targeting in media-ODA studies: Eisensee & Strömberg (2007) use disaster country mentions as the unit of relevance; Balcells et al. use country-specific conflict coverage. Country mention is a necessary condition for bilateral development media relevance.
+1. *Construct validity:* A Korean health article mentioning the US FDA or German pharmaceutical research does not constitute Korean public attention to *development* health issues. Including donor-country mentions introduces systematic upward bias in SDG3 (health, via FDA/US pharma mentions) and SDG8 (labour, via US/EU economic news).
+2. *Empirical evidence:* with all-country detection, candidates ran to roughly 6% of a test file and SDG3 accounted for 46% of classified articles — far exceeding Korea's actual ~12% SDG3 share of ODA. Restricting to ODA-recipient countries cut candidates by roughly 46%, driven almost entirely by removing developed-country mentions.
 
-**Design choice: ODA recipient countries only (not all countries)**  
-The filter was restricted to countries appearing in Korea's ODA recipient data rather than all countries, for two reasons:
+**Technical implementation:** Country names in Korean are detected via a compiled lookup table of roughly 190 countries with Korean-language names sourced from the UN Term Portal and Korean MOFA standards. Short Korean country names (≤3 characters: 이란=Iran, 수단=Sudan, 오만=Oman, 피지=Fiji) use a negative lookbehind regex `(?<![가-힣])` to prevent false matches against common Korean syllables (e.g., "건강이란 무엇인가," "what is health called," should not trigger Iran detection). The ODA-recipient country set is loaded at runtime from `oda_country_sdg_annual.csv`, ensuring consistency between the ODA dataset and the media filter; if that file is missing, the pipeline logs a warning and falls back to all-country detection rather than degrading silently.
 
-1. *Construct validity:* If a Korean health article mentions the United States FDA or German pharmaceutical research, this does not constitute Korean public attention to *development* health issues. Including OECD donor country mentions would introduce systematic upward bias in SDG3 (health, due to FDA/US pharma mentions) and SDG8 (labour, due to US/EU economic news).
+**Design rationale — recall-oriented signal combination.** An earlier, stricter version of this rule required a co-occurring SDG keyword hit (≥2) for every country-mention signal. Cross-tabulating hand-coded validation data by stratum showed this conjunction was the specific mechanism behind the filter's recall loss: cases with only one of the two required signals were excluded before ever reaching the ML stage. Since the ML stage (Stage 3, translation + anchor-based similarity) is the actual precision mechanism, the filter was redesigned to prioritize recall: the keyword-hit threshold for the country-paired signal was lowered, and additional signals (explicit ODA-actor mentions, the development vocabulary dictionary, and co-occurring sector terms) were added as independent triggers.
 
-2. *Empirical evidence:* Pre-check analysis confirmed this bias. With all-country detection, 1,057 articles passed the filter (6.0%) and SDG3 accounted for 46% of classified articles — far exceeding Korea's actual ~12% SDG3 share of ODA. With ODA-recipient-country-only detection, candidates dropped to 569 (3.3%), a 46% reduction driven almost entirely by removing developed-country mentions.
+The country-mention signal is deliberately *not* treated as fully independent, however: a calibration test showed that admitting any ODA-recipient-country mention on its own (with no keyword requirement) raises the candidate rate roughly 20-fold, driven almost entirely by populous ODA recipients (China, Vietnam, India, Indonesia, Thailand) that appear in routine Korean news for reasons unrelated to development. The chosen design keeps the country signal paired with a keyword-hit requirement specifically to avoid this, while treating the more specific signals (ODA-actor mentions, development vocabulary, sector-term co-occurrence) as independent triggers. See Section 4.6 for the calibration figures.
 
-**Technical implementation:**  
-- Country names in Korean are detected using a compiled lookup table of ~170 countries with Korean-language names from UN Term Portal and Korean MOFA standards.
-- Short Korean country names (≤3 characters: 이란=Iran, 수단=Sudan, 오만=Oman, 피지=Fiji) use negative lookbehind regex `(?<![가-힣])` to prevent false matches against common Korean syllables (e.g., "건강이란 무엇인가" — "what is health called" — should not trigger Iran detection).
-- The recipient country set is loaded at runtime from `oda_country_sdg_annual.csv`, ensuring consistency between the ODA dataset and the media filter.
+**Limitation to disclose:** Articles about global multilateral development initiatives (e.g., G20 development finance communiqués, UNGA SDG debates) that do not name specific recipient countries are excluded from the media variable, introducing a downward bias for SDG17 (Partnerships/Financing for Development), which is often discussed in aggregate terms. SDG17 counts should be interpreted as a lower bound.
 
-**Bug found and fixed (2026-07-14):** `oda_country_sdg_annual.csv` had never actually been generated at the path this filter reads from — `src/processed/oda/` was an empty directory. When that file is missing, `detect_oda_recipient_countries()` silently falls back to matching **any** of the ~170 countries in the lookup table, i.e. the donor-country exclusion described above was not actually running. This affected both the human-annotation sampler (`sample_for_labeling.py`) and this classification pipeline (`run_classify.py`, `precheck_classify.py`) identically, since both call the same function.
-
-Measured impact, using the hand-coded annotation sample (Section 4.4) re-scored before and after the fix: candidate-stratum precision rose from **9.5% to 15.2%** from this fix alone. A silent-failure guard (`logger.warning`) was added so this cannot recur invisibly — if the crosswalk file is missing (e.g. after a fresh clone, since `src/processed/*` is gitignored), the pipeline now logs a warning rather than degrading silently. **Anyone re-running this pipeline must run `preprocess_oda.py` before any classification step**, or the donor-exclusion filter will not function.
-
-**Limitation to disclose:**  
-Articles about global multilateral development initiatives (e.g., G20 development finance communiqués, UNGA SDG debates) that do not name specific recipient countries are excluded from the media variable. This introduces a downward bias for SDG17 (Partnerships/Financing for Development), which is often discussed in aggregate terms. This is acknowledged and SDG17 counts should be interpreted as a lower bound.
-
-Separately, China remains a technical ODA recipient in Korea's data (historical KOICA/EDCF loans) despite functioning as a major power in most Korean news coverage — most Korean articles mentioning China are not about "a developing country's development situation" in the sense this filter intends. This edge case was not corrected in the keyword/country filter itself (doing so would require excluding a country that is a genuine, if atypical, recipient in the underlying ODA data); it is instead handled at the human-coding stage via the annotation codebook (Section 4.4).
+Separately, China remains a technical ODA recipient in Korea's data (historical KOICA/EDCF loans) despite functioning as a major power in most Korean news coverage — most Korean articles mentioning China are not about "a developing country's development situation" in the sense this filter intends. This is not corrected in the country filter itself (doing so would require excluding a country that is a genuine, if atypical, recipient in the underlying ODA data); it is handled at the human-coding stage via the annotation codebook (Section 4.4) but remains unresolved in the deployed classifier — an open item.
 
 ### 3.3 Stage 3: Korean → English Translation + Multilingual Sentence Embedding
 
@@ -121,10 +110,10 @@ Separately, China remains a technical ODA recipient in Korea's data (historical 
 
 **Why translation is necessary:**
 
-Multilingual embedding models like multilingual-e5-base map texts from all supported languages into a shared semantic space. In that space, the Korean word for "health" and the English phrase "global health aid" are nearby regardless of whether the Korean article is about a domestic clinic or a KOICA health project in Ethiopia. The embedding model is trained on broad multilingual corpora and cannot represent the distinction *domestic Korean context vs. international development context* — this distinction is not a language feature, it is a domain-specificity feature.
+Multilingual embedding models like multilingual-e5-base map texts from all supported languages into a shared semantic space. In that space, the Korean word for "health" and the English phrase "global health aid" are nearby regardless of whether the Korean article is about a domestic clinic or a KOICA health project in Ethiopia. The embedding model cannot represent the distinction *domestic Korean context vs. international development context* on its own — this distinction is a domain-specificity feature, not a language feature.
 
 Translation to English decouples the language from the domain. After translation:
-- "발기약은 혈관 협심증약 함께 먹으면 위험" → "Taking erectile dysfunction medication with heart medication is dangerous" → low cosine similarity with "International health aid in developing countries; malaria HIV AIDS response in Africa" 
+- "발기약은 혈관 협심증약 함께 먹으면 위험" → "Taking erectile dysfunction medication with heart medication is dangerous" → low cosine similarity with "International health aid in developing countries; malaria HIV AIDS response in Africa"
 - "에티오피아 모성사망률 감소를 위한 KOICA 보건사업" → "KOICA health project for reducing maternal mortality in Ethiopia" → high cosine similarity with same anchor
 
 **Model choice:**
@@ -137,31 +126,15 @@ Translation to English decouples the language from the domain. After translation
 
 **Rejected alternatives:**
 
-- *Translation + OSDG text classifier:* OSDG (osdg.ai) is trained specifically on UN/OECD development documents. However, the open OSDG model was trained on scientific publications and may over-classify academic abstracts unrelated to developing-country media. More critically, OSDG assigns labels based on absolute scores (trained distribution), not relative semantic similarity — it may reject all short translated news titles as below threshold. The cosine similarity approach is more robust to short-text inputs.
+- *Translation + OSDG text classifier:* OSDG (osdg.ai) is trained specifically on UN/OECD development documents, but on scientific publications, and may over-classify academic abstracts unrelated to developing-country media. It also assigns labels based on absolute scores rather than relative semantic similarity, which may reject short translated news titles as below threshold. Cosine similarity is more robust to short-text inputs.
+- *Multilingual-e5-base without translation:* Korean embedding space conflates domestic and development health/education contexts, producing SDG3 = 46% vs. Korea's actual ODA share of ~12% — a 3–4× overestimate that would bias the media→ODA coefficient upward for SDG3.
+- *Full BERT classification on the entire corpus without staged filtering:* infeasible at the corpus's scale on available hardware; the staged pipeline (keyword → development signal → ML) is what makes the ML step tractable.
 
-- *Multilingual-e5-base without translation (original approach):* As documented above, Korean embedding space conflates domestic and development health/education contexts. This produced SDG3 = 46% vs. Korea's actual ODA share of ~12%, a 3–4× overestimate that would bias the media→ODA coefficient upward for SDG3.
+**Anchor text design:** SDG anchors are single-label prototypes. Each anchor explicitly contains (1) the phrase "in developing countries," "in recipient countries," or "through ODA"; (2) relevant geographic identifiers (Africa, Asia, least developed countries); (3) institutional references (KOICA, EDCF, WHO, WFP, UN agencies); (4) English translations of key Korean ODA vocabulary. This ensures the embedding comparison is sensitive to the development-context dimension, not just topic — a Korean article about domestic climate legislation translates to text without "developing countries," "ODA," or "Africa," and scores low against all 17 SDG anchors.
 
-- *Helsinki-NLP translation + full BERT classification on all 18M articles:* Runtime ~12,000 hours on available hardware. Not feasible; the staged pipeline (keyword → country → ML) reduces the ML step to ~3% of the corpus.
+**Threshold calibration:** `SIM_THRESHOLD = 0.35` for the English-input configuration — lower than an initial multilingual-input configuration (0.45), because English–English cosine similarity in the E5 space distributes differently from Korean–English similarity. The threshold accepts clearly development-relevant translations while rejecting domestic-context ones. A keyword boost (+0.03 per domain-specific Korean keyword hit, capped at +0.15) is applied to the cosine score as a soft correction for articles where high-quality Korean development keywords (e.g., "공적개발원조," "KOICA") appear despite imperfect translation.
 
-**Anchor text design:**
-
-SDG anchors are single-label prototypes. Each anchor explicitly contains:
-1. The phrase "in developing countries" or "in recipient countries" or "through ODA"
-2. Relevant geographic identifiers (Africa, Asia, least developed countries)
-3. Institutional references (KOICA, EDCF, WHO, WFP, UN agencies)
-4. English translations of key Korean ODA vocabulary
-
-This design ensures the embedding comparison is sensitive to the development context dimension, not just the topic dimension. A Korean news article about domestic climate legislation translates to text without "developing countries," "ODA," or "Africa" — and will therefore score low against all 17 SDG anchors.
-
-**Threshold calibration:**
-
-- `SIM_THRESHOLD = 0.35` for the English-input configuration
-- Note: this threshold is *not* the same as the earlier multilingual configuration (0.45), because English–English cosine similarity in the E5 space distributes differently than Korean–English similarity. The threshold was set to accept clearly development-relevant translations while rejecting domestic-context translations.
-- Additionally: keyword boost (+0.03 per domain-specific Korean keyword hit, capped at +0.15) is applied to the cosine score. This acts as a soft smoothing for articles where high-quality Korean development keywords (e.g., "공적개발원조," "KOICA") appear despite imperfect translation.
-
-**Translation decoding parameters (revised 2026-07-14):** `model.generate()` previously used the MarianMT checkpoint's own defaults (`num_beams=6`, `max_length=512`, no repetition penalty). On real GPU hardware (Tesla T4) this measured at ~1 article/sec, implying ~62 hours for the estimated candidate population — impractical at scale. Diagnosis found the 6-beam search and 512-token ceiling were not improving translation quality on this input (title + comma-separated keyword fragments, not full sentences): the original settings produced the same degenerate repetition artifacts (e.g. a keyword-stuffed source list translating to "lips, lips, lips..." repeated dozens of times) as greedy decoding, just ~90x slower. This repetition is largely a faithful reflection of the source data — Korean news keyword fields are frequently SEO-padded with the same term repeated many times — rather than a decoding failure per se.
-
-Revised settings — `num_beams=1`, `max_length=80`, `no_repeat_ngram_size=3` — measured at ~26 articles/sec on the same hardware (26x speedup) with no measurable quality difference on inspected samples, since this translation step feeds a similarity classifier rather than being read directly. `max_length=80` is sized for the actual output length of translated titles/keyword fragments, not general-purpose document translation.
+**Translation decoding parameters:** `num_beams=1`, `max_length=80`, `no_repeat_ngram_size=3` are used rather than the MarianMT checkpoint's defaults (`num_beams=6`, `max_length=512`). On GPU hardware (Tesla T4) the default configuration measured ~1 article/sec; the revised configuration measures ~26 articles/sec with no observed quality difference on inspected samples, since the translation output feeds a similarity classifier rather than being read directly. The 6-beam/512-token defaults were not improving translation quality on this input (titles and comma-separated keyword fragments, not full sentences) — both configurations produced the same degenerate repetition artifacts on SEO-padded keyword fields (a keyword-stuffed source list translating to the same term repeated many times), which largely reflects the source data rather than a decoding failure. `max_length=80` is sized for the actual output length of translated titles/keyword fragments.
 
 ---
 
@@ -169,66 +142,76 @@ Revised settings — `num_beams=1`, `max_length=80`, `no_repeat_ngram_size=3` �
 
 ### 4.1 Pre-check Protocol
 
-Before running the full 697-file corpus (~18M articles), the pipeline was validated on a held-out file (`NewsResult_20160111-20160117.csv`, n=17,592 articles) and inspected:
+Before running the full corpus, the pipeline is validated on a held-out file and inspected for:
 
-1. **Candidate reduction check:** Whether the staged filter reduces articles to a plausible development-relevant subset (target: < 5% of corpus, > 50% identifiably development-relevant on spot-check).
-
-2. **SDG distribution check:** Whether the media SDG distribution is broadly consistent with Korea's ODA SDG distribution at the aggregate level. Perfect correlation is not expected (media leads ODA by design), but extreme divergence (e.g., SDG3 = 46% in media vs. 12% in ODA) is a red flag.
-
-3. **Manual spot-check:** Top-3 articles per SDG by E5 score are reviewed manually for development relevance. At least 2 of 3 should be identifiably development-relevant (not domestic Korean content).
-
-4. **Keyword–ML agreement rate:** Target > 80%. Higher agreement indicates the keyword classifier and ML classifier are identifying the same underlying construct; systematic disagreement would signal a classification inconsistency.
+1. **Candidate reduction check:** whether the staged filter reduces articles to a plausible development-relevant subset.
+2. **SDG distribution check:** whether the media SDG distribution is broadly consistent with Korea's ODA SDG distribution at the aggregate level. Perfect correlation is not expected (media leads ODA by design), but extreme divergence (e.g., SDG3 far above its ODA share) is a red flag.
+3. **Manual spot-check:** top-3 articles per SDG by embedding similarity score, reviewed manually for development relevance.
+4. **Keyword–ML agreement rate:** target >80%. Higher agreement indicates the keyword and ML classifiers identify the same underlying construct; systematic disagreement would signal a classification inconsistency.
 
 ### 4.2 Construct Validity: Expected Correlations
 
 The media variable (`media_sdg_count_ct`) for Panel C should exhibit:
 
-- **Positive serial correlation within country–SDG pairs** (development issues are covered in clusters)
-- **Cross-country co-movement during global events** (Syria famine years spike SDG2 for MENA countries; Ebola years spike SDG3 for West Africa) — this is signal, not noise
-- **Near-zero correlation between media coverage of Korea's domestic health policy and SDG3 ODA disbursements** — if this correlation is large and positive after the revised classifier, it suggests residual domestic contamination and should prompt robustness checks using the Panel C country-restricted sample
+- **Positive serial correlation within country–SDG pairs** (development issues are covered in clusters).
+- **Cross-country co-movement during global events** (e.g., a regional famine spikes SDG2 for affected countries; an epidemic spikes SDG3 for affected regions) — this is signal, not noise.
+- **Near-zero correlation between media coverage of Korea's domestic health policy and SDG3 ODA disbursements.** A large positive correlation here would suggest residual domestic contamination and should prompt robustness checks using the country-restricted sample.
 
-### 4.3 Robustness Checks to Propose in Paper
+### 4.3 Robustness Checks to Report
 
-1. **Keyword-only specification:** Replace the translated-E5 media variable with the keyword-only classifier. Results should be directionally consistent but attenuated (less precise labeling).
-2. **High-confidence-only subsample:** Restrict to articles with SDG intensity = 3 (highest E5 similarity). This should sharpen coefficients if the measurement is valid.
-3. **Policy actor articles only:** Restrict to articles with `policy_actor = 1` (explicit KOICA/EDCF mention). This is a very high-precision but low-recall subset — coefficients should be larger in magnitude.
-4. **ODA recipient country subset:** Restrict Panel C to countries receiving >$1M/year (removes noise from small/intermittent recipients). This tests whether the main result is driven by major bilateral partners.
-5. **Lag structure sensitivity:** Test media lags of 3, 6, 9, 12, and 18 months. ODA programming cycles are typically 12–24 months; media effects at very short lags (1–2 months) are implausible given procurement timelines and should be near zero.
+1. **Keyword-only specification:** replace the translated-embedding media variable with the keyword-only classifier. Results should be directionally consistent but attenuated.
+2. **High-confidence-only subsample:** restrict to articles at the highest similarity-score intensity tier. This should sharpen coefficients if the measurement is valid.
+3. **Policy-actor articles only:** restrict to articles with an explicit KOICA/EDCF mention — a high-precision, low-recall subset; coefficients should be larger in magnitude.
+4. **ODA recipient country subset:** restrict to countries receiving more than a threshold amount per year, to test whether the main result is driven by major bilateral partners.
+5. **Lag structure sensitivity:** test media lags of 3, 6, 9, 12, and 18 months. ODA programming cycles typically run 12–24 months; media effects at very short lags (1–2 months) are implausible given procurement timelines and should be near zero.
 
 ### 4.4 Human Annotation Sample Design
 
-**Problem identified:** The initial annotation sample (n=638/coder) was drawn by simple random sampling stratified only by year. Since only ~3–6% of raw Korean news articles pass even the loose keyword+country relevance filter (Sections 3.1–3.2), a plain random sample is overwhelmingly non-development content. Coding that skewed sample left coders with too few positive/boundary cases to calibrate against each other, producing poor inter-coder agreement. That sample was abandoned before completion.
+**Problem addressed:** a plain simple-random sample of Korean news is overwhelmingly non-development content, since only a small minority of articles pass even a loose relevance filter. Coding such a sample leaves coders with too few positive or boundary cases to calibrate against each other, which depresses inter-coder agreement independent of the classifier's actual quality.
 
-**Revised design:** `sample_for_labeling.py` now pre-scores every candidate article with the keyword classifier (`KeywordClassifier.classify_dataframe`) and country detector (`detect_countries`, `detect_oda_recipient_countries`) before sampling, using the same criteria `run_classify.py` uses to route articles to the BERT stage:
+**Design:** `sample_for_labeling.py` pre-scores every article with the keyword classifier and country/vocabulary detectors before sampling, using the same criteria the classification pipeline uses to route articles to the ML stage:
 
-- **candidate** — `policy_actor == 1` OR (`kw_sdg_hits >= 2` AND mentions an ODA recipient country). Mirrors the actual BERT-eligible population.
-- **borderline** — some SDG keyword hits or a country mention, but not both. The genuinely ambiguous cases that build coder calibration.
-- **negative** — no keyword hits, no country mention. Kept as a smaller control group to confirm the true-negative rate.
+- **candidate** — passes the Stage 1+2 development-signal filter (Section 3.2). Mirrors the population actually scored by the ML stage.
+- **borderline** — some SDG keyword hits or a country mention, but not enough to qualify as a candidate. The genuinely ambiguous cases that build coder calibration.
+- **negative** — no keyword hits, no country mention. A smaller control group confirming the true-negative rate.
 
-Each year's sampling quota is drawn proportionally across strata (default 50% candidate / 30% borderline / 20% negative) instead of uniformly at random. This oversamples the population the classifier is actually scored against and gives coders enough boundary cases to build a consistent shared standard.
+Each year's sampling quota is drawn proportionally across strata (default 50% candidate / 30% borderline / 20% negative) rather than uniformly at random, oversampling the population the classifier is actually scored against.
 
-**Reporting caveat:** Because this is an enriched, not simple-random, sample, the prevalence of positive labels within it does **not** estimate corpus-wide prevalence and must not be reported as such. Precision/recall/F1 computed within the `candidate` stratum are valid estimates for that stratum specifically — which is also the exact population the trained classifiers are applied to, making it the right stratum for primary validation metrics.
+**Reporting caveat:** because this is an enriched, not simple-random, sample, the prevalence of positive labels within it does **not** estimate corpus-wide prevalence and should not be reported as such. Precision/recall/F1 computed within the `candidate` stratum are valid estimates for that stratum specifically — which is also the exact population the trained classifiers are applied to, making it the appropriate stratum for primary validation metrics.
 
-**Round 2 sample** (generated 2026-07-09, hand-coded by both coders): n=595, seed=2025, overlap=150, stratum counts candidate=306/borderline=170/negative=119, evenly distributed across 2007–2023 (35/year). Hand-coding this sample surfaced the candidate-filter precision problem documented in Sections 3.1–3.2 (9.5% precision) and prompted the bug fix and keyword revision described there.
-
-**Round 3 sample** (regenerated 2026-07-14, after the Section 3.1–3.2 fixes): drawn fresh from the corpus with the corrected filter — **not the same underlying articles as Round 2**, despite identical stratum counts (306/170/119 is a quota artifact of the 50/30/20 sampling design, not evidence the article set is unchanged; direct comparison confirmed <1% article-ID overlap between a from-scratch draw under the old vs. new filter code). Both coders hand-coded this round.
-
-**Inter-coder reliability, Round 3 (final, 2026-07-14):**
+**Sample and inter-coder reliability:** 595 articles were hand-coded by two independent coders (seed-fixed enriched stratified draw; stratum counts candidate=277/borderline=164/negative=119 after excluding rows with unresolved disagreement), with a 150-row overlap block coded by both.
 
 | Metric | Value | Scope |
 |---|---|---|
 | Cohen's κ | 0.885 | 150 overlap rows |
 | Krippendorff's α | 0.885 | 150 overlap rows |
-| Krippendorff's α | 0.739 | 445 non-overlap rows (both coders independently labeled the full sample, not just the designated overlap) |
+| Krippendorff's α | 0.739 | 445 non-overlap rows (both coders independently labeled the full sample) |
 | **Krippendorff's α** | **0.772** | **all 595 rows** |
 
-This did not converge on the first pass. An intermediate round showed κ=0.577 (moderate, below the conventional 0.60 acceptability threshold), driven by a specific, resolvable disagreement pattern rather than noise: one coder's revisions correctly extended "development-relevant" to cover conflict/crisis stories in developing countries (coups, earthquakes, epidemics) that don't mention Korean aid — a category the printed coder instructions under-specified (the fuller rule, "poverty, health, education, conflict, climate, aid," existed only as a code comment in `sample_for_labeling.py`, never surfaced to coders) — but then over-applied the same fix to domestic-Korean and developed-country stories that merely touched an SDG-adjacent theme (e.g., Dalai Lama's US visit, Korean domestic labor disputes), violating the prior "developing country" gate. A second revision pass, applying a single mechanical rule — "is the story's main geographic subject a developing/ODA-recipient country, not Korea or a high-income country" — before any thematic judgment, resolved the large majority of disagreements and produced the final numbers above.
+Reliability improved over the course of coding through one codebook refinement. An initial pass produced κ=0.577 (below the conventional 0.60 acceptability threshold), driven by a specific, resolvable disagreement: one coder correctly extended "development-relevant" to cover conflict/crisis stories in developing countries (coups, earthquakes, epidemics) that do not mention Korean aid, but over-applied the same extension to domestic-Korean and developed-country stories that merely touched an SDG-adjacent theme. Applying a single mechanical rule — evaluate whether the story's main geographic subject is a developing/ODA-recipient country before any thematic judgment — resolved the majority of disagreements and produced the reliability figures above. This full "does this discuss a developing country's development situation" rule (poverty, health, education, conflict, climate, aid) is documented as the coding standard; a fresh, blind (no coder discussion) validation round is the natural next check on whether this reliability generalizes.
 
-**Diagnostic note for future rounds:** both coders independently hand-coded all 595 rows rather than splitting the non-overlap 445 as originally planned, which is why Krippendorff's α (which tolerates partial/unbalanced coverage per unit) was used alongside Cohen's κ (which requires complete paired coverage) — α on the full 595 is the more representative reliability estimate for this dataset, not just the designated overlap subset.
+Both coders independently hand-coded the full 595 rows rather than only the designated overlap, which is why Krippendorff's α (which tolerates partial/unbalanced coverage) is reported alongside Cohen's κ (which requires complete paired coverage) — α on the full 595 is the more representative reliability estimate.
 
-### 4.5 Supervised Classifier Training Results (2026-07-14)
+**Candidate-stratum precision and recall:** cross-tabulating the 595-row sample by stratum against `label_development_relevant`:
 
-Both supervised classifiers were trained on the 560 Round-3 rows where both coders agreed on `label_development_relevant` (35 of the 595 hand-coded rows had unresolved disagreement and were excluded from training data rather than tie-broken, to avoid injecting label noise; 487 negative / 73 positive).
+| Stratum | n | positives |
+|---|---|---|
+| candidate | 277 | 69 |
+| borderline | 164 | 4 |
+| negative | 119 | 0 |
+
+Recall = 69/73 = **94.5%** (Wilson 95% CI: 86.7–97.8%); candidate-stratum precision = 69/277 = **24.9%** (Wilson 95% CI: 20.2–30.3%). Both intervals are wide because the sample contains only 73 positives in total — the practical constraint motivating larger follow-up annotation rounds. The recall-leak cases (4 of 73 positives, in the borderline stratum) motivated the Stage 1+2 filter redesign described in Section 3.2.
+
+**Implementation issues identified and corrected during development, disclosed for transparency:**
+
+1. The ODA-recipient country crosswalk file the filter depends on (`oda_country_sdg_annual.csv`) was, at one point, missing from its expected path; when missing, the filter silently falls back to matching any of the ~190 countries in the lookup table rather than only ODA recipients, which inflates false positives from donor-country mentions. A logged warning now makes this failure mode visible rather than silent.
+2. The homonym and generic-vocabulary keyword issues described in Section 3.1.
+
+Combined, correcting both issues raised candidate-stratum precision on the hand-coded validation sample from roughly 9–10% to the 24.9% reported above.
+
+### 4.5 Supervised Classifier Training Results
+
+Both supervised classifiers were trained on the 560 hand-coded rows where both coders agreed on `label_development_relevant` (35 of 595 rows had unresolved disagreement and were excluded from training data rather than tie-broken, to avoid injecting label noise; 487 negative / 73 positive).
 
 **`train_oda_classifier.py`** (TF-IDF char n-gram + LogisticRegression, 5-fold stratified CV):
 
@@ -240,7 +223,7 @@ Both supervised classifiers were trained on the 560 Round-3 rows where both code
 | Recall | 0.437 ± 0.077 |
 | ROC-AUC | 0.945 ± 0.020 |
 
-High ROC-AUC with modest recall at the default 0.5 threshold indicates the model ranks positives well but is conservative given the small positive class (73 examples) — recall could likely be improved by lowering the decision threshold, at a precision cost, if higher recall is prioritized for a downstream stage.
+High ROC-AUC with modest recall at the default 0.5 threshold indicates the model ranks positives well but is conservative given the small positive class (73 examples); recall could likely be improved by lowering the decision threshold, at a precision cost, if a downstream use case prioritizes recall.
 
 **`train_devrel_classifier.py`** (fine-tuned `klue/roberta-base`, 4 epochs, 20% held-out validation, CPU):
 
@@ -250,7 +233,20 @@ High ROC-AUC with modest recall at the default 0.5 threshold indicates the model
 | Accuracy | 0.893 |
 | ROC-AUC | 0.946 |
 
-**Note on the `oda_relevant` vs. `label_development_relevant` distinction:** `train_oda_classifier.py` was designed around a narrower `oda_relevant` concept (its seed keyword list is ODA/aid-program-specific: KOICA, EDCF, 공적개발원조), while the actual annotation codebook coders used asks the broader "does this discuss a developing country's development situation" question (`label_development_relevant`). For this training run, `label_development_relevant` was used directly as `oda_relevant` (i.e., treated as equivalent) rather than conducting a separate narrower labeling round. This is a simplification worth flagging for peer review — the two constructs are related but not identical, and the reported metrics reflect the broader construct.
+**Note on the `oda_relevant` vs. `label_development_relevant` distinction:** `train_oda_classifier.py` was designed around a narrower `oda_relevant` concept (its seed keyword list is ODA/aid-program-specific: KOICA, EDCF, 공적개발원조), while the annotation codebook coders used asks the broader "does this discuss a developing country's development situation" question (`label_development_relevant`). For this training run, `label_development_relevant` was used directly as `oda_relevant` rather than conducting a separate narrower labeling round — a simplification worth flagging, since the two constructs are related but not identical, and the reported metrics reflect the broader construct.
+
+Both the small positive class (73 examples) and the limited total sample size (595 hand-coded rows, given the low base rate of development-relevant content) are treated as an open constraint rather than a settled question: additional annotation rounds are planned specifically to enlarge the positive-class sample and tighten the precision/recall intervals above.
+
+### 4.6 Candidate-Rule Calibration
+
+The candidate rule described in Section 3.2 was chosen after comparing two specifications on a representative monthly file (n=68,428 articles):
+
+| Specification | Candidate rate | Full-corpus (2007–2025) extrapolation |
+|---|---|---|
+| Country-paired keyword requirement (chosen) | 12.9% | ~1.8M articles, ~20 GPU-hours |
+| Country mention treated as fully independent | 33.7% | ~4.9M articles, ~53 GPU-hours |
+
+The fully independent specification was rejected: it is driven almost entirely by populous ODA-recipient countries (China, Vietnam, India, Indonesia, Thailand) appearing in routine Korean news for reasons unrelated to development, and the resulting compute cost is disproportionate to the additional recall it would provide over the chosen specification. For comparison, the earlier, stricter AND-conjunction rule (Section 3.2) measured a 1.7% candidate rate on the same file — the chosen specification increases the candidate population roughly 7-fold relative to that baseline while remaining a small fraction of the full corpus.
 
 ---
 
@@ -262,19 +258,19 @@ High ROC-AUC with modest recall at the default 0.5 threshold indicates the model
 
 ### Challenge 2: "Your media variable is contaminated by domestic Korean news."
 
-**Response:** This is precisely the concern that motivated the three-stage filtering design. The ODA-recipient-country filter (Stage 2) restricts articles to those mentioning countries in Korea's actual ODA recipient set, removing articles that discuss domestic Korean SDG issues without international development relevance. The translation + development-anchored embedding (Stage 3) further discriminates by requiring that the semantic content of the translated article align with ODA/development-specific anchor texts, not just the SDG topic in general. Residual contamination is acknowledged as a limitation but substantially reduced (candidate pool dropped 46% from the ODA country filter alone), and the robustness check using `policy_actor = 1` articles provides a high-precision upper bound.
+**Response:** This is precisely the concern that motivated the staged filtering design. The development-signal filter (Stage 2) restricts articles to those mentioning ODA-recipient countries or explicit development vocabulary, removing articles that discuss domestic Korean SDG issues without international development relevance. The translation + development-anchored embedding (Stage 3) further discriminates by requiring the translated article's semantic content to align with ODA/development-specific anchor texts, not just the SDG topic in general. Residual contamination is acknowledged as a limitation but substantially reduced, and the robustness check using `policy_actor = 1` articles provides a high-precision upper bound.
 
 ### Challenge 3: "Machine translation introduces noise. Why not use a Korean-language classifier trained on Korean development text?"
 
-**Response:** No Korean-language training dataset for ODA/development SDG classification exists to our knowledge. The OSDG and Aurora SDG classifiers, the two established SDG text classification systems, were trained on English-language documents (scientific publications and policy documents). Using Helsinki-NLP translation as a preprocessing step allows us to leverage these English-calibrated semantic spaces without requiring Korean-labeled training data. The keyword boost (+0.03 per hit, capped at 0.15) applied to the original Korean text provides a correction signal when key Korean development terms (KOICA, 공적개발원조, 수원국) appear, reducing dependence on translation quality for the most important articles. As a robustness check, the keyword-only specification does not require translation and serves as an alternative identification strategy.
+**Response:** No Korean-language training dataset for ODA/development SDG classification exists to our knowledge. OSDG and Aurora, the two established SDG text classification systems, were trained on English-language documents. Using Helsinki-NLP translation as a preprocessing step allows this pipeline to leverage these English-calibrated semantic spaces without requiring Korean-labeled training data. The keyword boost applied to the original Korean text provides a correction signal when key Korean development terms appear, reducing dependence on translation quality for the most important articles. As a robustness check, the keyword-only specification does not require translation and serves as an alternative identification strategy.
 
 ### Challenge 4: "How do you handle articles relevant to multiple SDGs?"
 
-**Response:** The classifier assigns a primary SDG label (highest cosine similarity + keyword boost) and a secondary SDG label (second highest, if cosine similarity ≥ 0.20). The main analysis uses primary SDG only; robustness checks with secondary-SDG-inclusive counting will be reported. This follows the approach of Sacchi et al. (2019) and the OSDG documentation, which recommend single-label classification for index construction to avoid double-counting. Articles with very close primary/secondary scores (within 0.05) could be flagged for multi-SDG treatment in sensitivity analysis.
+**Response:** The classifier assigns a primary SDG label (highest cosine similarity + keyword boost) and a secondary SDG label (second highest, if cosine similarity ≥ 0.20). The main analysis uses primary SDG only; robustness checks with secondary-SDG-inclusive counting are reported. This follows the approach of Sacchi et al. (2019) and the OSDG documentation, which recommend single-label classification for index construction to avoid double-counting. Articles with very close primary/secondary scores are flagged for multi-SDG treatment in sensitivity analysis.
 
 ### Challenge 5: "Your ODA SDG assignment via CRS crosswalk is imprecise."
 
-**Response:** The Pincet et al. (2019) CRS–SDG crosswalk is the OECD's own recommended instrument for retrospective SDG tagging of ODA flows and has been used in peer-reviewed studies (Bhattacharya et al. 2018; Ohno et al. 2020; OECD DAC 2020 SDG Finance report). The alternative — project-level text classification of Korean ODA project descriptions — would require a Korean-language ODA text classifier that does not currently exist and introduces its own measurement uncertainty. The crosswalk approach is conservative (it maps sector-of-activity to SDG, which is well-defined) and consistent with how comparable studies have operationalized ODA-SDG alignment. Direct SDG tags (27.1% of projects) are used when available and take priority.
+**Response:** The Pincet et al. (2019) CRS–SDG crosswalk is the OECD's own recommended instrument for retrospective SDG tagging of ODA flows and has been used in peer-reviewed studies (Bhattacharya et al. 2018; Ohno et al. 2020; OECD DAC 2020 SDG Finance report). The alternative — project-level text classification of Korean ODA project descriptions — would require a Korean-language ODA text classifier that does not currently exist and introduces its own measurement uncertainty. The crosswalk approach is conservative and consistent with how comparable studies operationalize ODA-SDG alignment. Direct SDG tags (27.1% of projects) are used when available and take priority.
 
 ---
 
@@ -283,15 +279,12 @@ High ROC-AUC with modest recall at the default 0.5 threshold indicates the model
 | Item | Status |
 |------|--------|
 | BigKinds news data | Licensed dataset; raw files not public but available to researchers from BigKinds upon institutional request |
-| ODA data source | `korea_oda data.xlsx` — Korea KOICA/EDCF official data; available from OECD CRS database and KOICA Open Data Portal |
+| ODA data source | Korea KOICA/EDCF official data; available from OECD CRS database and KOICA Open Data Portal |
 | CRS–SDG crosswalk | Pincet et al. (2019), publicly available from OECD iLibrary |
 | Translation model | `Helsinki-NLP/opus-mt-ko-en`, publicly available on HuggingFace (MIT License) |
 | Embedding model | `intfloat/multilingual-e5-base`, publicly available on HuggingFace (MIT License) |
 | Pipeline code | All preprocessing, classification, and panel construction code available in this repository |
 | Keyword lists | In `pipeline/classify/keywords_ko.py`; reviewable and extensible |
+| Development vocabulary | In `pipeline/reference/development_terms_ko.py`; reviewable and extensible |
 | Country–ISO3 mapping | In `pipeline/reference/countries_ko.py`; based on UN Term Portal and MOFA Korea standards |
 | Human annotation sample | Enriched stratified design (candidate/borderline/negative), see Section 4.4; generated by `pipeline/sample_for_labeling.py` |
-
----
-
-*Last updated: 2026-07-14. Update this document when any pipeline parameter changes.*

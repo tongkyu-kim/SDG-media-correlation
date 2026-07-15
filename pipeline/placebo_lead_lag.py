@@ -162,11 +162,11 @@ for panel_df, label in [(df_clean, "CLEAN (2010-2015)"), (df_full, "FULL (2010-2
         print(f"\n  Lag coefficients significant (p<0.10):  {lag_sig}/{len(lag_rows)}")
         print(f"  Lead coefficients significant (p<0.10): {lead_sig}/{len(lead_rows)}")
         if lag_sig > 0 and lead_sig == 0:
-            print(f"\n  ✓ GRANGER CAUSALITY HOLDS: lags predict, leads do not.")
+            print(f"\n  Granger causality holds: lags predict, leads do not.")
         elif lead_sig > 0:
-            print(f"\n  ✗ WARNING: {lead_sig} lead(s) are significant — check for omitted variable bias.")
+            print(f"\n  Warning: {lead_sig} lead(s) are significant — check for omitted variable bias.")
         else:
-            print(f"\n  ~ Neither lags nor leads are significant (insufficient power or no effect).")
+            print(f"\n  Neither lags nor leads are significant (insufficient power or no effect).")
 
 # ── Save results ──────────────────────────────────────────────────────────────
 
